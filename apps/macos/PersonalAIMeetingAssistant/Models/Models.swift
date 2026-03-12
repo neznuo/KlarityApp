@@ -64,6 +64,18 @@ enum MeetingStatus: String, Codable, CaseIterable {
             return false
         }
     }
+
+    /// True when the meeting is in any transient state that the UI should poll for updates.
+    /// Includes `.recording` to handle the brief window between recording stop and
+    /// pipeline start where the backend hasn't yet transitioned to `.preprocessing`.
+    var needsPolling: Bool {
+        switch self {
+        case .recording, .preprocessing, .transcribing, .matchingSpeakers, .summarizing:
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 // MARK: - Transcript

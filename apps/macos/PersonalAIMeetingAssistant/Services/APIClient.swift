@@ -71,19 +71,24 @@ final class APIClient {
         try await post("/meetings", body: ["title": title])
     }
 
-    func updateMeeting(id: String, audioFilePath: String) async throws -> Meeting {
-        let body: [String: String] = ["audio_file_path": audioFilePath]
-        logger.debug("Sending PATCH /meetings/\(id) with \(body)")
-        
+    func updateMeeting(id: String, audioFilePath: String, durationSeconds: Double? = nil) async throws -> Meeting {
+        var body: [String: Any] = ["audio_file_path": audioFilePath]
+        if let dur = durationSeconds {
+            body["duration_seconds"] = dur
+            let iso = ISO8601DateFormatter()
+            body["ended_at"] = iso.string(from: Date())
+        }
+        logger.debug("Sending PATCH /meetings/\(id)")
+
         var req = URLRequest(url: try url(for: "/meetings/\(id)"))
         req.httpMethod = "PATCH"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
+
         let (data, resp) = try await session.data(for: req)
         let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
         logger.debug("← PATCH /meetings/\(id) resulted in \(status) body: \(String(data: data, encoding: .utf8) ?? "")")
-        
+
         try validate(response: resp, data: data)
         return try decoder.decode(Meeting.self, from: data)
     }

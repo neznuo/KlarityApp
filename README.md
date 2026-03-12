@@ -15,7 +15,9 @@ SwiftUI macOS App  →  Local FastAPI Backend  →  ElevenLabs / Resemblyzer / O
 | Frontend  | Swift + SwiftUI (macOS)             |
 | Backend   | Python 3.11 + FastAPI + Uvicorn     |
 | Database  | SQLite via SQLAlchemy               |
-| Audio     | FFmpeg (preprocessing), AVAudioEngine (recording) |
+| Audio capture | AVFoundation: SCStream (system audio) + AVCaptureSession (mic) |
+| Audio mixing  | AVMutableComposition + AVAssetExportSession (post-recording mix to .m4a) |
+| Audio preprocessing | FFmpeg (16kHz mono normalization) |
 | STT       | ElevenLabs Scribe                   |
 | Embeddings| Resemblyzer                         |
 | LLM       | OpenAI / Anthropic / Gemini / Ollama|
@@ -140,12 +142,13 @@ Users see a single `.app`. There is no separate server to start.
 | Step | Actor | Description |
 |------|-------|-------------|
 | 1    | User  | Click **New Recording**, enter meeting title |
-| 2    | App   | Create meeting record, start local audio capture |
+| 2    | App   | Create meeting record, start capture: SCStream (system audio) + AVCaptureSession (mic) recorded to separate temp .m4a files |
 | 3    | User  | Stop recording when meeting ends |
-| 4    | Backend | Preprocess audio → Transcribe (ElevenLabs) → Embed speakers |
-| 5    | User  | Review transcript, fix/assign speaker identities |
-| 6    | User  | Click **Generate Summary & Tasks** when ready |
-| 7    | Backend | Call selected LLM → save summary.md + tasks.json |
+| 4    | App   | Mix system + mic temp files into final `audio.m4a` via AVMutableComposition export |
+| 5    | Backend | Preprocess audio → Transcribe (ElevenLabs) → Embed speakers |
+| 6    | User  | Review transcript, fix/assign speaker identities |
+| 7    | User  | Click **Generate Summary & Tasks** when ready |
+| 8    | Backend | Call selected LLM → save summary.md + tasks.json |
 
 ---
 
@@ -194,3 +197,6 @@ pytest tests/ -v
 - **Summary generation is always manual** — user clicks the button
 - **All data stays local** unless cloud API is explicitly configured
 - API keys for sensitive providers stored in **macOS Keychain** (Swift) and env variables (backend)
+
+## Build App Locally
+./scripts/build.sh 2>&1 | tail -30

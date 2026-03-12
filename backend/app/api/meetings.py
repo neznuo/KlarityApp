@@ -40,10 +40,12 @@ from pydantic import BaseModel
 class MeetingPatch(BaseModel):
     title: str | None = None
     audio_file_path: str | None = None
+    ended_at: datetime | None = None
+    duration_seconds: float | None = None
 
 @router.patch("/{meeting_id}", response_model=MeetingOut)
 def update_meeting(meeting_id: str, body: MeetingPatch, db: Session = Depends(get_db)):
-    """Update meeting metadata, such as setting the audio file path."""
+    """Update meeting metadata, such as setting the audio file path after recording stops."""
     meeting = db.get(Meeting, meeting_id)
     if not meeting:
         raise HTTPException(status_code=404, detail="Meeting not found")
@@ -52,6 +54,10 @@ def update_meeting(meeting_id: str, body: MeetingPatch, db: Session = Depends(ge
         meeting.title = body.title
     if body.audio_file_path is not None:
         meeting.audio_file_path = body.audio_file_path
+    if body.ended_at is not None:
+        meeting.ended_at = body.ended_at
+    if body.duration_seconds is not None:
+        meeting.duration_seconds = body.duration_seconds
 
     meeting.updated_at = datetime.now(timezone.utc)
     db.commit()

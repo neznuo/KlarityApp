@@ -10,6 +10,8 @@ final class HomeViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var searchText = ""
 
+    private var pollTask: Task<Void, Never>?
+
     var filteredMeetings: [Meeting] {
         if searchText.isEmpty { return meetings }
         let q = searchText.lowercased()
@@ -21,8 +23,36 @@ final class HomeViewModel: ObservableObject {
         defer { isLoading = false }
         do {
             meetings = try await APIClient.shared.fetchMeetings()
+            schedulePollingIfNeeded()
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Silently refreshes the list without showing the loading spinner.
+    /// Used by the background poll task so the UI doesn't flicker.
+    private func silentRefresh() async {
+        do {
+            meetings = try await APIClient.shared.fetchMeetings()
+            schedulePollingIfNeeded()
+        } catch {
+            // Swallow errors during background polling — transient network issues shouldn't show alerts.
+        }
+    }
+
+    private func schedulePollingIfNeeded() {
+        guard meetings.contains(where: { $0.status.needsPolling }) else {
+            pollTask?.cancel()
+            pollTask = nil
+            return
+        }
+        guard pollTask == nil else { return }
+        pollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                guard !Task.isCancelled, let self else { return }
+                await self.silentRefresh()
+            }
         }
     }
 
@@ -77,6 +107,7 @@ final class RecordingViewModel: ObservableObject {
 
     var isRecording: Bool { recorder.state == .recording }
     var isPaused:    Bool { recorder.state == .paused }
+    var isPreparing: Bool { recorder.state == .preparing }
 
     func startNewMeeting() async {
         guard !meetingTitle.trimmingCharacters(in: .whitespaces).isEmpty else {
@@ -113,12 +144,18 @@ final class RecordingViewModel: ObservableObject {
         isStopping = true
         defer { isStopping = false }
 
+        // Capture elapsed time before stopRecording() resets it to zero.
+        let capturedDuration = recorder.elapsedSeconds > 0 ? recorder.elapsedSeconds : nil
         let fileURL = await recorder.stopRecording()
-        
+
         // Let the backend know where the file is so it can process it
         do {
             if let path = fileURL?.path {
-                let updatedMeeting = try await APIClient.shared.updateMeeting(id: meeting.id, audioFilePath: path)
+                let updatedMeeting = try await APIClient.shared.updateMeeting(
+                    id: meeting.id,
+                    audioFilePath: path,
+                    durationSeconds: capturedDuration
+                )
                 try await APIClient.shared.triggerProcessing(meetingId: meeting.id)
                 currentMeeting = nil
                 meetingTitle = ""
@@ -179,7 +216,7 @@ final class MeetingDetailViewModel: ObservableObject {
             async let ppl  = APIClient.shared.fetchPeople()
             (meeting, transcript, speakers, summary, tasks, people) = try await (m, t, s, sum, tk, ppl)
             
-            if meeting?.status.isProcessing == true {
+            if meeting?.status.needsPolling == true {
                 startPolling(meetingId: meetingId)
             }
         } catch {
@@ -198,7 +235,7 @@ final class MeetingDetailViewModel: ObservableObject {
                     let updated = try await APIClient.shared.fetchMeeting(id: meetingId)
                     self.meeting = updated
                     
-                    if !updated.status.isProcessing {
+                    if !updated.status.needsPolling {
                         // Finished processing! Fetch the newly generated resources
                         self.transcript = (try? await APIClient.shared.fetchTranscript(meetingId: meetingId)) ?? []
                         self.speakers   = (try? await APIClient.shared.fetchSpeakers(meetingId: meetingId)) ?? []
