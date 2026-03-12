@@ -1,0 +1,232 @@
+import Foundation
+
+// MARK: - Meeting
+
+/// Mirrored from backend MeetingOut schema.
+struct Meeting: Identifiable, Codable, Hashable {
+    let id: String
+    var title: String
+    var startedAt: Date?
+    var endedAt: Date?
+    var durationSeconds: Double?
+    var status: MeetingStatus
+    var audioFilePath: String?
+    var normalizedAudioPath: String?
+    var transcriptJsonPath: String?
+    var summaryJsonPath: String?
+    var createdAt: Date
+    var updatedAt: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, status
+        case startedAt = "started_at"
+        case endedAt = "ended_at"
+        case durationSeconds = "duration_seconds"
+        case audioFilePath = "audio_file_path"
+        case normalizedAudioPath = "normalized_audio_path"
+        case transcriptJsonPath = "transcript_json_path"
+        case summaryJsonPath = "summary_json_path"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+    }
+}
+
+enum MeetingStatus: String, Codable, CaseIterable {
+    case created
+    case recording
+    case preprocessing
+    case transcribing
+    case matchingSpeakers = "matching_speakers"
+    case transcriptReady = "transcript_ready"
+    case summarizing
+    case complete
+    case failed
+
+    var displayName: String {
+        switch self {
+        case .created:          return "Created"
+        case .recording:        return "Recording"
+        case .preprocessing:    return "Preprocessing Audio"
+        case .transcribing:     return "Transcribing"
+        case .matchingSpeakers: return "Matching Speakers"
+        case .transcriptReady:  return "Transcript Ready"
+        case .summarizing:      return "Generating Summary"
+        case .complete:         return "Complete"
+        case .failed:           return "Failed"
+        }
+    }
+
+    var isProcessing: Bool {
+        switch self {
+        case .preprocessing, .transcribing, .matchingSpeakers, .summarizing:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+// MARK: - Transcript
+
+/// A single spoken segment in a transcript.
+struct TranscriptSegment: Identifiable, Codable {
+    let id: String
+    let meetingId: String
+    let clusterId: String?
+    var speakerLabel: String?
+    let startMs: Int
+    let endMs: Int
+    let text: String
+    let confidence: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case id, text, confidence
+        case meetingId = "meeting_id"
+        case clusterId = "cluster_id"
+        case speakerLabel = "speaker_label"
+        case startMs = "start_ms"
+        case endMs = "end_ms"
+    }
+
+    /// Formatted timestamp string e.g. "01:23:45"
+    var timestampString: String {
+        let totalSeconds = startMs / 1000
+        let h = totalSeconds / 3600
+        let m = (totalSeconds % 3600) / 60
+        let s = totalSeconds % 60
+        return String(format: "%02d:%02d:%02d", h, m, s)
+    }
+}
+
+// MARK: - Speaker Cluster
+
+struct SpeakerCluster: Identifiable, Codable {
+    let id: String
+    let meetingId: String
+    var tempLabel: String
+    var assignedPersonId: String?
+    var confidence: Double?
+    var durationSeconds: Double?
+    var segmentCount: Int
+    var duplicateGroupHint: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, confidence
+        case meetingId = "meeting_id"
+        case tempLabel = "temp_label"
+        case assignedPersonId = "assigned_person_id"
+        case durationSeconds = "duration_seconds"
+        case segmentCount = "segment_count"
+        case duplicateGroupHint = "duplicate_group_hint"
+    }
+}
+
+// MARK: - Person
+
+struct Person: Identifiable, Codable {
+    let id: String
+    var displayName: String
+    var notes: String?
+    var lastSeenAt: Date?
+    var meetingCount: Int
+    var createdAt: Date
+    var updatedAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id, notes
+        case displayName = "display_name"
+        case lastSeenAt = "last_seen_at"
+        case meetingCount = "meeting_count"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+    }
+}
+
+// MARK: - Summary
+
+struct MeetingSummary: Codable {
+    let id: String
+    let meetingId: String
+    let provider: String
+    let model: String
+    let summaryMarkdown: String?
+    let summaryJson: String?
+    let createdAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id, provider, model
+        case meetingId = "meeting_id"
+        case summaryMarkdown = "summary_markdown"
+        case summaryJson = "summary_json"
+        case createdAt = "created_at"
+    }
+}
+
+// MARK: - Task
+
+struct MeetingTask: Identifiable, Codable {
+    let id: String
+    let meetingId: String
+    var ownerPersonId: String?
+    var rawOwnerText: String?
+    var description: String
+    var dueDate: String?
+    var status: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, description, status
+        case meetingId = "meeting_id"
+        case ownerPersonId = "owner_person_id"
+        case rawOwnerText = "raw_owner_text"
+        case dueDate = "due_date"
+    }
+}
+
+// MARK: - App Settings
+
+struct AppSettings: Codable {
+    var elevenLabsApiKey: String
+    var openAiApiKey: String
+    var anthropicApiKey: String
+    var geminiApiKey: String
+    var ollamaEndpoint: String
+    var defaultLlmProvider: String
+    var defaultLlmModel: String
+    var defaultTranscriptionProvider: String
+    var baseStorageDir: String
+    var speakerSuggestThreshold: Double
+    var speakerAutoAssignThreshold: Double
+    var speakerDuplicateThreshold: Double
+
+    enum CodingKeys: String, CodingKey {
+        case ollamaEndpoint = "ollama_endpoint"
+        case baseStorageDir = "base_storage_dir"
+        case elevenLabsApiKey = "elevenlabs_api_key"
+        case openAiApiKey = "openai_api_key"
+        case anthropicApiKey = "anthropic_api_key"
+        case geminiApiKey = "gemini_api_key"
+        case defaultLlmProvider = "default_llm_provider"
+        case defaultLlmModel = "default_llm_model"
+        case defaultTranscriptionProvider = "default_transcription_provider"
+        case speakerSuggestThreshold = "speaker_suggest_threshold"
+        case speakerAutoAssignThreshold = "speaker_auto_assign_threshold"
+        case speakerDuplicateThreshold = "speaker_duplicate_threshold"
+    }
+
+    static var `default`: AppSettings {
+        AppSettings(
+            elevenLabsApiKey: "",
+            openAiApiKey: "",
+            anthropicApiKey: "",
+            geminiApiKey: "",
+            ollamaEndpoint: "http://localhost:11434",
+            defaultLlmProvider: "ollama",
+            defaultLlmModel: "llama3",
+            defaultTranscriptionProvider: "elevenlabs",
+            baseStorageDir: "~/Documents/AI-Meetings",
+            speakerSuggestThreshold: 0.75,
+            speakerAutoAssignThreshold: 0.90,
+            speakerDuplicateThreshold: 0.82
+        )
+    }
+}

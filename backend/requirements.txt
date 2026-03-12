@@ -1,0 +1,27 @@
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+sqlalchemy>=2.0.0
+alembic>=1.13.0
+pydantic>=2.6.0
+pydantic-settings>=2.2.0
+python-multipart>=0.0.9
+httpx>=0.27.0
+python-dotenv>=1.0.0
+
+# Audio processing
+resemblyzer>=0.1.1.dev0
+librosa>=0.10.0
+numpy>=1.26.0
+scipy>=1.12.0
+
+# Transcription
+elevenlabs>=1.2.0
+
+# LLM providers
+openai>=1.14.0
+anthropic>=0.20.0
+google-generativeai>=0.5.0
+
+# Utilities
+aiofiles>=23.2.0
+structlog>=24.1.0

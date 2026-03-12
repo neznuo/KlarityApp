@@ -1,0 +1,50 @@
+name: KlarityApp
+options:
+  bundleIdPrefix: com.klarity
+  deploymentTarget:
+    macOS: "14.0"
+  xcodeVersion: "15.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    PRODUCT_NAME: KlarityApp
+    SWIFT_VERSION: "5.9"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: ""           # Fill in your Team ID from Xcode Signing settings
+    INFOPLIST_FILE: PersonalAIMeetingAssistant/App/Info.plist
+    PRODUCT_BUNDLE_IDENTIFIER: com.klarity.meeting-assistant
+
+targets:
+  KlarityApp:
+    type: application
+    platform: macOS
+    sources:
+      - path: PersonalAIMeetingAssistant
+        excludes:
+          - "**/*.md"
+    info:
+      path: PersonalAIMeetingAssistant/App/Info.plist
+      properties:
+        CFBundleName: KlarityApp
+        CFBundleDisplayName: Klarity
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        NSMicrophoneUsageDescription: "KlarityApp records meeting audio from your microphone."
+        NSScreenCaptureUsageDescription: "KlarityApp needs Screen Recording permission to capture system audio (Zoom, Meets, etc). No video frames are ever recorded."
+        NSPrincipalClass: NSApplication
+        NSHighResolutionCapable: true
+        LSMinimumSystemVersion: "14.0"
+    entitlements:
+      path: PersonalAIMeetingAssistant/App/KlarityApp.entitlements
+      properties:
+        com.apple.security.app-sandbox: false   # Disabled for local dev; enable for distribution
+        com.apple.security.device.audio-input: true
+        com.apple.security.network.client: true
+    preBuildScripts:
+      - name: Bundle Python Backend
+        script: |
+          "${SRCROOT}/../../scripts/bundle_backend.sh"
+        basedOnDependencyAnalysis: false
+        showEnvVars: false
