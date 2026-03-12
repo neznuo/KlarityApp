@@ -34,6 +34,10 @@ struct RecordingView: View {
                 Text(vm.isPaused ? "Paused" : "Recording")
                     .font(.headline)
                     .foregroundStyle(vm.isPaused ? Color.secondary : Color.red)
+            } else if vm.isPreparing {
+                ProgressView("Preparing...")
+                    .progressViewStyle(.circular)
+                    .tint(.secondary)
             } else {
                 // Title input and mode selection before starting
                 VStack(alignment: .leading, spacing: 16) {
@@ -66,6 +70,9 @@ struct RecordingView: View {
                         .padding()
                 } else if vm.isCreating {
                     ProgressView("Starting...")
+                        .padding()
+                } else if vm.isPreparing {
+                    ProgressView("Preparing...")
                         .padding()
                 } else if !vm.isRecording && !vm.isPaused {
                     Button {

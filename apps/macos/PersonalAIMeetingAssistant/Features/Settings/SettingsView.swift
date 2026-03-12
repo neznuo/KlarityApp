@@ -2,9 +2,50 @@ import SwiftUI
 
 struct SettingsView: View {
     @StateObject private var vm = SettingsViewModel()
+    @EnvironmentObject private var appState: AppState
 
     var body: some View {
         Form {
+            // ── System Requirements ──────────────────────────────────────────
+            Section {
+                if appState.dependencies == nil {
+                    HStack {
+                        ProgressView().scaleEffect(0.7)
+                        Text("Checking dependencies…")
+                            .foregroundStyle(.secondary)
+                            .font(AppTheme.Fonts.body)
+                    }
+                } else if let deps = appState.dependencies {
+                    ForEach(deps.checks) { check in
+                        LabeledContent(check.name) {
+                            HStack(spacing: 6) {
+                                Image(systemName: check.isOk ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                                    .foregroundStyle(check.isOk ? Color.green : (check.required ? Color.red : Color.orange))
+                                Text(check.detail)
+                                    .font(AppTheme.Fonts.caption)
+                                    .foregroundStyle(check.isOk ? .secondary : (check.required ? Color.red : Color.orange))
+                                    .lineLimit(1)
+                            }
+                        }
+                    }
+                }
+
+                Button {
+                    Task { await appState.checkDependencies() }
+                } label: {
+                    Label("Re-check", systemImage: "arrow.clockwise")
+                        .font(AppTheme.Fonts.caption)
+                }
+                .buttonStyle(.bordered)
+            } header: {
+                Text("System Requirements")
+            } footer: {
+                if let deps = appState.dependencies, !deps.allRequiredOk {
+                    Text("⚠ One or more required dependencies are missing. Recording and transcription will fail until resolved.")
+                        .foregroundStyle(.red)
+                }
+            }
+
             Section("Transcription") {
                 Picker("Provider", selection: $vm.settings.defaultTranscriptionProvider) {
                     Text("ElevenLabs Scribe").tag("elevenlabs")

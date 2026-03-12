@@ -57,6 +57,12 @@ final class APIClient {
         }
     }
 
+    // MARK: - Dependencies
+
+    func fetchDependencies() async throws -> DependenciesResult {
+        try await get("/health/dependencies")
+    }
+
     // MARK: - Meetings
 
     func fetchMeetings() async throws -> [Meeting] {

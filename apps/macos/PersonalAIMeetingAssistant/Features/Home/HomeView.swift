@@ -2,12 +2,21 @@ import SwiftUI
 
 struct HomeView: View {
     @StateObject private var vm = HomeViewModel()
+    @EnvironmentObject private var appState: AppState
     @State private var showingRecording = false
     @State private var selectedMeetingId: String?
+    @State private var depWarningDismissed = false
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
+                // Dependency warning banner — shown until dismissed or fixed
+                if !depWarningDismissed,
+                   let deps = appState.dependencies,
+                   !deps.allRequiredOk {
+                    depWarningBanner(deps: deps)
+                }
+
                 topActionAndFilterBar
                 
                 Divider().foregroundStyle(AppTheme.Colors.border)
@@ -46,6 +55,44 @@ struct HomeView: View {
         .task { await vm.load() }
     }
     
+    // MARK: - Dependency Warning Banner
+
+    private func depWarningBanner(deps: DependenciesResult) -> some View {
+        let failing = deps.checks.filter { !$0.isOk && $0.required }
+        return HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Setup incomplete — recording may not work")
+                    .font(AppTheme.Fonts.listTitle)
+                    .foregroundStyle(AppTheme.Colors.primaryText)
+                Text(failing.map(\.name).joined(separator: ", ") + " not configured.")
+                    .font(AppTheme.Fonts.caption)
+                    .foregroundStyle(AppTheme.Colors.secondaryText)
+            }
+            Spacer()
+            Button("Fix in Settings") {
+                // Navigate to Settings via the sidebar
+                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            }
+            .font(AppTheme.Fonts.caption)
+            .buttonStyle(.bordered)
+
+            Button {
+                depWarningDismissed = true
+            } label: {
+                Image(systemName: "xmark")
+                    .font(AppTheme.Fonts.caption)
+                    .foregroundStyle(AppTheme.Colors.secondaryText)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, AppTheme.Metrics.paddingStandard)
+        .padding(.vertical, 10)
+        .background(Color.orange.opacity(0.08))
+        .overlay(Rectangle().frame(height: 1).foregroundStyle(Color.orange.opacity(0.25)), alignment: .bottom)
+    }
+
     // MARK: - Custom Top Navigation
     
     private var topActionAndFilterBar: some View {

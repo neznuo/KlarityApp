@@ -16,6 +16,67 @@ def health_check():
     return {"status": "ok", "service": "klarity-backend"}
 
 
+@router.get("/health/dependencies")
+def check_dependencies():
+    """
+    Probe all runtime dependencies required for the processing pipeline.
+    Returns a list of checks with status 'ok' | 'missing' | 'not_configured'.
+    """
+    from app.services.audio.preprocessor import find_tool_or_none
+
+    checks = []
+
+    # ── System tools ────────────────────────────────────────────────────────
+    ffmpeg_path = find_tool_or_none("ffmpeg")
+    checks.append({
+        "key": "ffmpeg",
+        "name": "FFmpeg",
+        "status": "ok" if ffmpeg_path else "missing",
+        "detail": ffmpeg_path if ffmpeg_path else "Not found — run: brew install ffmpeg",
+        "required": True,
+    })
+
+    ffprobe_path = find_tool_or_none("ffprobe")
+    checks.append({
+        "key": "ffprobe",
+        "name": "FFprobe",
+        "status": "ok" if ffprobe_path else "missing",
+        "detail": ffprobe_path if ffprobe_path else "Not found — run: brew install ffmpeg",
+        "required": True,
+    })
+
+    # ── Transcription ────────────────────────────────────────────────────────
+    has_eleven = bool(settings.elevenlabs_api_key)
+    checks.append({
+        "key": "elevenlabs_api_key",
+        "name": "ElevenLabs API Key",
+        "status": "ok" if has_eleven else "not_configured",
+        "detail": "Configured" if has_eleven else "Missing — add your key in Settings → Transcription",
+        "required": True,
+    })
+
+    # ── LLM provider ─────────────────────────────────────────────────────────
+    active_llm = next(
+        (p for p, v in [
+            ("OpenAI", settings.openai_api_key),
+            ("Anthropic", settings.anthropic_api_key),
+            ("Gemini", settings.gemini_api_key),
+            ("Ollama", settings.ollama_endpoint),
+        ] if v),
+        None,
+    )
+    checks.append({
+        "key": "llm_provider",
+        "name": "LLM Provider",
+        "status": "ok" if active_llm else "not_configured",
+        "detail": f"Using {active_llm}" if active_llm else "No provider configured — add an API key or Ollama endpoint",
+        "required": False,
+    })
+
+    all_required_ok = all(c["status"] == "ok" for c in checks if c["required"])
+    return {"all_required_ok": all_required_ok, "checks": checks}
+
+
 @router.get("/settings", response_model=SettingsOut)
 def get_settings():
     """Return current effective settings."""

@@ -194,6 +194,29 @@ struct MeetingTask: Identifiable, Codable {
     }
 }
 
+// MARK: - Dependency Health
+
+struct DependencyCheck: Identifiable, Codable {
+    let key: String
+    let name: String
+    let status: String   // "ok" | "missing" | "not_configured"
+    let detail: String
+    let required: Bool
+
+    var id: String { key }
+    var isOk: Bool { status == "ok" }
+}
+
+struct DependenciesResult: Codable {
+    let allRequiredOk: Bool
+    let checks: [DependencyCheck]
+
+    enum CodingKeys: String, CodingKey {
+        case allRequiredOk = "all_required_ok"
+        case checks
+    }
+}
+
 // MARK: - App Settings
 
 struct AppSettings: Codable {

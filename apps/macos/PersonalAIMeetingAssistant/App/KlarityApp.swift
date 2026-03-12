@@ -30,6 +30,7 @@ final class AppState: ObservableObject {
 
     @Published var backendReachable: Bool = false
     @Published var backendStartupError: String?
+    @Published var dependencies: DependenciesResult?
 
     private let backend = BackendProcessManager.shared
 
@@ -46,6 +47,7 @@ final class AppState: ObservableObject {
                 let reachable = await APIClient.shared.healthCheck()
                 if reachable {
                     self.backendReachable = true
+                    await self.checkDependencies()
                     return
                 }
             }
@@ -57,6 +59,14 @@ final class AppState: ObservableObject {
     @MainActor
     func checkBackend() async {
         backendReachable = await APIClient.shared.healthCheck()
+        if backendReachable {
+            await checkDependencies()
+        }
+    }
+
+    @MainActor
+    func checkDependencies() async {
+        dependencies = try? await APIClient.shared.fetchDependencies()
     }
 
     /// Call from applicationWillTerminate (or SwiftUI .onReceive of NSApplication.willTerminateNotification)

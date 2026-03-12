@@ -80,6 +80,16 @@ final class BackendProcessManager: ObservableObject {
         env["PYTHONPATH"] = backendDir.path
         // Point to the .env file inside the backend directory (if present).
         env["DOTENV_PATH"] = backendDir.appendingPathComponent(".env").path
+
+        // Augment PATH with Homebrew locations. macOS GUI apps inherit a minimal
+        // PATH (/usr/bin:/bin:/usr/sbin:/sbin) that never includes Homebrew, so
+        // ffmpeg and other tools installed via brew are invisible to shutil.which().
+        //   /opt/homebrew/bin  — Apple Silicon (default since Homebrew 3.0)
+        //   /usr/local/bin     — Intel Macs / legacy installs
+        let homebrewPaths = "/opt/homebrew/bin:/usr/local/bin"
+        let existingPath = env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
+        env["PATH"] = "\(homebrewPaths):\(existingPath)"
+
         proc.environment = env
 
         // Pipe stdout and stderr to a physical file to bypass macOS <private> Console logging.
