@@ -255,6 +255,9 @@ struct MeetingRowView: View {
                 .cornerRadius(4)
                 .foregroundColor(AppTheme.Colors.secondaryText)
             
+            // Status badge
+            statusBadge
+
             // Date
             Text(formatDate(meeting.createdAt))
                 .font(AppTheme.Fonts.listTitle)
@@ -263,6 +266,52 @@ struct MeetingRowView: View {
         }
         .padding(.vertical, 10)
         .contentShape(Rectangle()) // Makes the whole row clickable
+    }
+
+    @ViewBuilder
+    private var statusBadge: some View {
+        switch meeting.status {
+        case .preprocessing, .transcribing, .matchingSpeakers:
+            HStack(spacing: 4) {
+                ProgressView().scaleEffect(0.5).frame(width: 12, height: 12)
+                Text(meeting.status.displayName)
+                    .font(AppTheme.Fonts.smallMono)
+                    .foregroundColor(AppTheme.Colors.brandPrimary)
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(AppTheme.Colors.brandPrimary.opacity(0.08))
+            .cornerRadius(4)
+        case .summarizing:
+            HStack(spacing: 4) {
+                ProgressView().scaleEffect(0.5).frame(width: 12, height: 12)
+                Text("Summarizing")
+                    .font(AppTheme.Fonts.smallMono)
+                    .foregroundColor(AppTheme.Colors.accentOrange)
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(AppTheme.Colors.accentOrange.opacity(0.08))
+            .cornerRadius(4)
+        case .failed:
+            Text("Failed")
+                .font(AppTheme.Fonts.smallMono)
+                .foregroundColor(AppTheme.Colors.accentRed)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(AppTheme.Colors.accentRed.opacity(0.08))
+                .cornerRadius(4)
+        case .complete:
+            Text("Done")
+                .font(AppTheme.Fonts.smallMono)
+                .foregroundColor(AppTheme.Colors.accentGreen)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(AppTheme.Colors.accentGreen.opacity(0.08))
+                .cornerRadius(4)
+        default:
+            EmptyView()
+        }
     }
 
     private func formatDuration(_ seconds: Int) -> String {

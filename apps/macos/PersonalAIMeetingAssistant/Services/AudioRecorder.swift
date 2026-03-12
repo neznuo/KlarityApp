@@ -1,6 +1,7 @@
 import AVFoundation
 import ScreenCaptureKit
 import Foundation
+import CoreMedia
 import os.log
 
 // MARK: - Recording Mode
@@ -11,72 +12,64 @@ enum RecordingMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-// MARK: - AudioFileMixer
+// MARK: - SingleTrackWriter
 
-/// Thread-safe writer for the audio-only output (audio.m4a).
-/// IMPORTANT: .m4a containers only support a SINGLE audio track.
-/// Both mic and system audio are routed through the same input sequentially.
-final class AudioFileMixer {
+/// Writes CMSampleBuffers from exactly ONE audio source to a single .m4a file.
+/// By accepting only one source format, the AAC encoder's AudioConverter is
+/// initialized once and never sees a mismatched CMAudioFormatDescription.
+final class SingleTrackWriter {
     private var assetWriter: AVAssetWriter?
     private var audioInput: AVAssetWriterInput?
-    private var isWriterStarted = false
+    private var isSessionStarted = false
     private var isPaused = false
-    private let queue = DispatchQueue(label: "com.klarity.mixerQueue", qos: .userInitiated)
+    private var lastPTS: CMTime = .invalid
+    private var outputURL: URL?
 
-    // Reset between recordings
-    private var _hasStartedWriting = false
-    var hasStartedWriting: Bool { _hasStartedWriting }
+    private(set) var hasReceivedData = false
+
+    private let queue: DispatchQueue
+    private let label: String
+    private let outputSettings: [String: Any]
+    private let nominalTimescale: CMTimeScale
+
+    init(label: String, outputSettings: [String: Any], nominalTimescale: CMTimeScale) {
+        self.label = label
+        self.outputSettings = outputSettings
+        self.nominalTimescale = nominalTimescale
+        self.queue = DispatchQueue(label: "com.klarity.\(label)TrackQueue", qos: .userInitiated)
+    }
 
     func setup(url: URL) throws {
-        // Full reset of state for a clean new recording
-        isWriterStarted = false
-        _hasStartedWriting = false
+        outputURL = url
+        isSessionStarted = false
+        hasReceivedData = false
         isPaused = false
-        audioInput = nil
-        assetWriter = nil
+        lastPTS = .invalid
 
         if FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.removeItem(at: url)
         }
+
         let writer = try AVAssetWriter(url: url, fileType: .m4a)
-
-        // Single AAC audio track — m4a supports exactly 1 audio track.
-        // AAC auto-resamples and downmixes any SCStream Float32 / multi-channel formats.
-        let audioSettings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: 48000.0,
-            AVNumberOfChannelsKey: 2,
-            AVEncoderBitRateKey: 128000
-        ]
-
-        let input = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
+        let input = AVAssetWriterInput(mediaType: .audio, outputSettings: outputSettings)
         input.expectsMediaDataInRealTime = true
 
         guard writer.canAdd(input) else {
-            throw NSError(domain: "AudioFileMixer", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "AVAssetWriter cannot add audio input"])
+            throw NSError(domain: "SingleTrackWriter", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "[\(label)] AVAssetWriter cannot add audio input"])
         }
         writer.add(input)
         writer.startWriting()
 
         self.audioInput = input
         self.assetWriter = writer
-        os_log("[Mixer] AVAssetWriter ready. URL: %{public}@", url.path)
+        os_log("[%{public}@] AVAssetWriter ready. URL: %{public}@", label, url.path)
     }
 
-    func writeSystemAudio(buffer: CMSampleBuffer) {
+    func write(buffer: CMSampleBuffer) {
         queue.async { [weak self] in
             guard let self = self, !self.isPaused else { return }
-            self._hasStartedWriting = true
-            self.write(buffer: buffer)
-        }
-    }
-
-    func writeMicAudio(buffer: CMSampleBuffer) {
-        queue.async { [weak self] in
-            guard let self = self, !self.isPaused else { return }
-            self._hasStartedWriting = true
-            self.write(buffer: buffer)
+            self.writeSync(buffer: buffer)
         }
     }
 
@@ -84,55 +77,310 @@ final class AudioFileMixer {
         queue.async { [weak self] in self?.isPaused = paused }
     }
 
-    private func write(buffer: CMSampleBuffer) {
-        guard let writer = assetWriter else { return }
-        guard writer.status == .writing else {
-            if writer.status == .failed {
-                os_log("[Mixer-Error] AVAssetWriter failed: %{public}@", String(describing: writer.error))
+    /// Finishes writing and returns the output URL on success, nil if no data was written.
+    func finish() async -> URL? {
+        return await withCheckedContinuation { continuation in
+            queue.async { [weak self] in
+                guard let self = self, let writer = self.assetWriter else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                guard self.isSessionStarted && writer.status == .writing else {
+                    writer.cancelWriting()
+                    if let url = self.outputURL {
+                        try? FileManager.default.removeItem(at: url)
+                    }
+                    let url = self.outputURL
+                    self.resetState()
+                    _ = url // suppress unused warning
+                    continuation.resume(returning: nil)
+                    return
+                }
+                self.audioInput?.markAsFinished()
+                let savedURL = self.outputURL
+                let hadData = self.hasReceivedData
+                let lbl = self.label
+                writer.finishWriting {
+                    if writer.status == .completed && hadData {
+                        os_log("[%{public}@] finishWriting completed.", lbl)
+                        continuation.resume(returning: savedURL)
+                    } else {
+                        os_log("[%{public}@] finishWriting failed (status=%d): %{public}@",
+                               lbl, writer.status.rawValue,
+                               String(describing: writer.error))
+                        if let url = savedURL {
+                            try? FileManager.default.removeItem(at: url)
+                        }
+                        continuation.resume(returning: nil)
+                    }
+                }
+                self.resetState()
+            }
+        }
+    }
+
+    private func writeSync(buffer: CMSampleBuffer) {
+        guard let writer = assetWriter, writer.status == .writing else {
+            if assetWriter?.status == .failed {
+                os_log("[%{public}@] AVAssetWriter failed: %{public}@",
+                       label, String(describing: assetWriter?.error))
             }
             return
         }
         guard let input = audioInput, input.isReadyForMoreMediaData else { return }
+        guard CMSampleBufferIsValid(buffer) else { return }
 
-        if !isWriterStarted {
-            let pts = CMSampleBufferGetPresentationTimeStamp(buffer)
-            guard pts.isValid else { return }
-            writer.startSession(atSourceTime: pts)
-            isWriterStarted = true
-            os_log("[Mixer] Session started at %.3f", pts.seconds)
+        let originalPTS = CMSampleBufferGetPresentationTimeStamp(buffer)
+        guard originalPTS.isValid else { return }
+
+        // Fix PTS collisions using the buffer's actual duration as the increment,
+        // not 1 sample. Each audio buffer typically represents ~1024 samples (~21ms).
+        var pts = originalPTS
+        if lastPTS.isValid && CMTimeCompare(pts, lastPTS) <= 0 {
+            let dur = CMSampleBufferGetDuration(buffer)
+            let inc = (dur.isValid && dur > .zero)
+                ? dur
+                : CMTime(value: CMTimeValue(1024), timescale: nominalTimescale)
+            pts = CMTimeAdd(lastPTS, inc)
         }
 
-        if !input.append(buffer) {
-            os_log("[Mixer-Error] append failed: %{public}@", String(describing: writer.error))
+        var outputBuffer = buffer
+        if CMTimeCompare(pts, originalPTS) != 0 {
+            var timing = CMSampleTimingInfo(
+                duration: CMSampleBufferGetDuration(buffer),
+                presentationTimeStamp: pts,
+                decodeTimeStamp: .invalid
+            )
+            var retimed: CMSampleBuffer?
+            let st = CMSampleBufferCreateCopyWithNewTiming(
+                allocator: kCFAllocatorDefault,
+                sampleBuffer: buffer,
+                sampleTimingEntryCount: 1,
+                sampleTimingArray: &timing,
+                sampleBufferOut: &retimed
+            )
+            guard st == noErr, let r = retimed else {
+                os_log("[%{public}@] Failed to retime buffer: %d", label, st)
+                return
+            }
+            outputBuffer = r
+        }
+
+        if !isSessionStarted {
+            writer.startSession(atSourceTime: pts)
+            isSessionStarted = true
+            os_log("[%{public}@] Session started at %.3fs", label, pts.seconds)
+        }
+
+        if input.append(outputBuffer) {
+            lastPTS = pts
+            hasReceivedData = true
+        } else {
+            os_log("[%{public}@] append failed: %{public}@", label, String(describing: writer.error))
         }
     }
 
+    private func resetState() {
+        assetWriter = nil
+        audioInput = nil
+        isSessionStarted = false
+        hasReceivedData = false
+        lastPTS = .invalid
+        outputURL = nil
+    }
+}
+
+// MARK: - DualTrackMixer
+
+/// Coordinates two SingleTrackWriter instances — one for system audio, one for mic audio.
+/// On finish(), mixes both tracks into a single m4a using AVMutableComposition + AVAssetExportSession.
+/// This avoids the format-mismatch corruption caused by writing two incompatible CMSampleBuffer
+/// streams (SCStream Float32/non-interleaved vs. AVCapture PCM) into a single AVAssetWriterInput.
+final class DualTrackMixer {
+    private let systemWriter: SingleTrackWriter
+    private let micWriter: SingleTrackWriter
+
+    private var finalOutputURL: URL?
+    private var systemTmpURL: URL?
+    private var micTmpURL: URL?
+
+    private var _hasStartedWriting = false
+    var hasStartedWriting: Bool { _hasStartedWriting }
+
+    init() {
+        // SCStream delivers Float32, non-interleaved, 48kHz, stereo
+        systemWriter = SingleTrackWriter(
+            label: "system",
+            outputSettings: [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: 48000.0,
+                AVNumberOfChannelsKey: 2,
+                AVEncoderBitRateKey: 128000
+            ],
+            nominalTimescale: 48000
+        )
+        // AVCaptureSession typically delivers PCM at 44100Hz or 48kHz, mono or stereo.
+        // Keeping output as mono AAC; AVAssetWriterInput's AudioConverter handles SRC.
+        micWriter = SingleTrackWriter(
+            label: "mic",
+            outputSettings: [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: 44100.0,
+                AVNumberOfChannelsKey: 1,
+                AVEncoderBitRateKey: 64000
+            ],
+            nominalTimescale: 44100
+        )
+    }
+
+    func setup(url: URL) throws {
+        finalOutputURL = url
+        _hasStartedWriting = false
+
+        let uuid = UUID().uuidString
+        let dir = url.deletingLastPathComponent()
+        let sysURL = dir.appendingPathComponent("system_tmp_\(uuid).m4a")
+        let micURL = dir.appendingPathComponent("mic_tmp_\(uuid).m4a")
+
+        systemTmpURL = sysURL
+        micTmpURL = micURL
+
+        try systemWriter.setup(url: sysURL)
+        do {
+            try micWriter.setup(url: micURL)
+        } catch {
+            // System writer already started — clean it up before rethrowing
+            Task { _ = await systemWriter.finish() }
+            throw error
+        }
+    }
+
+    func writeSystemAudio(buffer: CMSampleBuffer) {
+        _hasStartedWriting = true   // system audio is the primary source
+        systemWriter.write(buffer: buffer)
+    }
+
+    func writeMicAudio(buffer: CMSampleBuffer) {
+        micWriter.write(buffer: buffer)
+    }
+
+    func setPaused(_ paused: Bool) {
+        systemWriter.setPaused(paused)
+        micWriter.setPaused(paused)
+    }
 
     func finish() async {
-        await withCheckedContinuation { continuation in
-            queue.async { [weak self] in
-                guard let self = self, let writer = self.assetWriter else {
-                    continuation.resume()
-                    return
-                }
+        // Drain both writers in parallel
+        async let sysFinish = systemWriter.finish()
+        async let micFinish = micWriter.finish()
+        let (sysURL, micURL) = await (sysFinish, micFinish)
 
-                if self.isWriterStarted && writer.status == .writing {
-                    self.audioInput?.markAsFinished()
-                    writer.finishWriting {
-                        os_log("[Mixer] finishWriting done, status=%d", writer.status.rawValue)
-                        continuation.resume()
-                    }
-                } else {
-                    os_log("[Mixer] Writer not started (status=%d), cancelling.", writer.status.rawValue)
-                    writer.cancelWriting()
-                    continuation.resume()
-                }
+        defer {
+            finalOutputURL = nil
+            systemTmpURL = nil
+            micTmpURL = nil
+        }
 
-                self.assetWriter = nil
-                self.audioInput = nil
-                self.isWriterStarted = false
-                self._hasStartedWriting = false
+        guard let finalURL = finalOutputURL else { return }
+
+        if let sysURL = sysURL, let micURL = micURL {
+            await composeTracks(systemURL: sysURL, micURL: micURL, outputURL: finalURL)
+        } else if let sysURL = sysURL {
+            os_log("[DualTrackMixer] Mic had no data; using system-audio-only output.")
+            moveFile(from: sysURL, to: finalURL)
+            if let micURL = micURL { try? FileManager.default.removeItem(at: micURL) }
+        } else {
+            os_log("[DualTrackMixer-Error] Both writers produced no output.")
+            if let micURL = micURL { try? FileManager.default.removeItem(at: micURL) }
+        }
+    }
+
+    private func composeTracks(systemURL: URL, micURL: URL, outputURL: URL) async {
+        let sysAsset = AVURLAsset(url: systemURL)
+        let micAsset = AVURLAsset(url: micURL)
+
+        let sysDuration: CMTime
+        let micDuration: CMTime
+        do {
+            sysDuration = try await sysAsset.load(.duration)
+            micDuration = try await micAsset.load(.duration)
+        } catch {
+            os_log("[DualTrackMixer-Error] Failed to load asset durations: %{public}@",
+                   error.localizedDescription)
+            moveFile(from: systemURL, to: outputURL)
+            try? FileManager.default.removeItem(at: micURL)
+            return
+        }
+
+        let composition = AVMutableComposition()
+        guard let sysTrack = composition.addMutableTrack(withMediaType: .audio,
+                                                         preferredTrackID: kCMPersistentTrackID_Invalid),
+              let micTrack = composition.addMutableTrack(withMediaType: .audio,
+                                                         preferredTrackID: kCMPersistentTrackID_Invalid)
+        else {
+            os_log("[DualTrackMixer-Error] Could not add composition tracks.")
+            moveFile(from: systemURL, to: outputURL)
+            try? FileManager.default.removeItem(at: micURL)
+            return
+        }
+
+        do {
+            let sysSources = try await sysAsset.loadTracks(withMediaType: .audio)
+            let micSources = try await micAsset.loadTracks(withMediaType: .audio)
+            guard let sysSource = sysSources.first, let micSource = micSources.first else {
+                throw NSError(domain: "DualTrackMixer", code: 2,
+                              userInfo: [NSLocalizedDescriptionKey: "Missing audio tracks in temp assets"])
             }
+            try sysTrack.insertTimeRange(CMTimeRange(start: .zero, duration: sysDuration),
+                                         of: sysSource, at: .zero)
+            try micTrack.insertTimeRange(CMTimeRange(start: .zero, duration: micDuration),
+                                         of: micSource, at: .zero)
+        } catch {
+            os_log("[DualTrackMixer-Error] Composition build failed: %{public}@",
+                   error.localizedDescription)
+            moveFile(from: systemURL, to: outputURL)
+            try? FileManager.default.removeItem(at: micURL)
+            return
+        }
+
+        if FileManager.default.fileExists(atPath: outputURL.path) {
+            try? FileManager.default.removeItem(at: outputURL)
+        }
+
+        guard let session = AVAssetExportSession(asset: composition,
+                                                 presetName: AVAssetExportPresetAppleM4A) else {
+            os_log("[DualTrackMixer-Error] Could not create AVAssetExportSession.")
+            moveFile(from: systemURL, to: outputURL)
+            try? FileManager.default.removeItem(at: micURL)
+            return
+        }
+
+        session.outputURL = outputURL
+        session.outputFileType = .m4a
+
+        await session.export()
+
+        if session.status == .completed {
+            os_log("[DualTrackMixer] Export completed: %{public}@", outputURL.path)
+        } else {
+            os_log("[DualTrackMixer-Error] Export failed (status=%d): %{public}@",
+                   session.status.rawValue,
+                   session.error?.localizedDescription ?? "unknown")
+            moveFile(from: systemURL, to: outputURL)
+        }
+
+        try? FileManager.default.removeItem(at: systemURL)
+        try? FileManager.default.removeItem(at: micURL)
+    }
+
+    private func moveFile(from source: URL, to destination: URL) {
+        do {
+            if FileManager.default.fileExists(atPath: destination.path) {
+                try FileManager.default.removeItem(at: destination)
+            }
+            try FileManager.default.moveItem(at: source, to: destination)
+        } catch {
+            os_log("[DualTrackMixer-Error] moveFile failed: %{public}@", error.localizedDescription)
         }
     }
 }
@@ -256,7 +504,7 @@ final class AudioRecorder: NSObject, ObservableObject, SCStreamOutput, AVCapture
         case idle, preparing, recording, paused
     }
 
-    @Published var state: RecordingState = .idle
+    @Published private(set) var state: RecordingState = .idle
     @Published var elapsedSeconds: Double = 0
     @Published var currentFilePath: URL?
     @Published var errorMessage: String?
@@ -264,7 +512,7 @@ final class AudioRecorder: NSObject, ObservableObject, SCStreamOutput, AVCapture
     private var stream: SCStream?
     private var captureSession: AVCaptureSession?
 
-    private let mixer = AudioFileMixer()
+    private let mixer = DualTrackMixer()
     // Wrapped in a `let` container so nonisolated SCStream callbacks can access it
     // without actor-isolation errors (same pattern as `mixer` above).
     private final class VideoMixerRef { var current: VideoFileMixer? }
@@ -276,16 +524,20 @@ final class AudioRecorder: NSObject, ObservableObject, SCStreamOutput, AVCapture
     private var pauseAccumulated: Double = 0
     private var pauseStart: Date?
 
+    private var controlState: RecordingState = .idle
+    private var isPreparingCapture = false
+
     private let logger = Logger(subsystem: "com.klarity.meeting-assistant", category: "AudioRecorder")
 
     // MARK: - Public API
 
     func startRecording(to audioURL: URL, videoURL: URL? = nil, mode: RecordingMode = .systemAudioOnly) {
         errorMessage = nil
-        guard state == .idle else { return }
+        guard controlState == .idle, !isPreparingCapture else { return }
 
         currentMode = mode
         state = .preparing  // Show "preparing" while hardware negotiates
+        isPreparingCapture = true
         currentFilePath = audioURL
 
         Task {
@@ -383,6 +635,8 @@ final class AudioRecorder: NSObject, ObservableObject, SCStreamOutput, AVCapture
                 self.logger.info("Step 6: Capture started OK")
 
                 // Only NOW flip to recording — hardware is confirmed ready
+                self.controlState = .recording
+                self.isPreparingCapture = false
                 self.state = .recording
                 self.recordingStart = Date()
                 self.startTimer()
@@ -398,28 +652,32 @@ final class AudioRecorder: NSObject, ObservableObject, SCStreamOutput, AVCapture
     }
 
     func pauseRecording() {
-        guard state == .recording else { return }
+        guard controlState == .recording else { return }
         mixer.setPaused(true)
         state = .paused
+        controlState = .paused
         pauseStart = Date()
         stopTimer()
     }
 
     func resumeRecording() {
-        guard state == .paused else { return }
+        guard controlState == .paused else { return }
         pauseAccumulated += Date().timeIntervalSince(pauseStart ?? Date())
         pauseStart = nil
         mixer.setPaused(false)
         state = .recording
+        controlState = .recording
         startTimer()
     }
 
     func stopRecording() async -> URL? {
-        guard state != .idle else { return nil }
+        guard controlState == .recording || controlState == .paused else { return nil }
 
         let path = currentFilePath
         stopTimer()
         state = .idle
+        controlState = .idle
+        isPreparingCapture = false
         elapsedSeconds = 0
         pauseAccumulated = 0
 
@@ -522,6 +780,8 @@ final class AudioRecorder: NSObject, ObservableObject, SCStreamOutput, AVCapture
     private func resetToIdle() {
         stopTimer()
         state = .idle
+        controlState = .idle
+        isPreparingCapture = false
         elapsedSeconds = 0
         pauseAccumulated = 0
         recordingStart = nil
