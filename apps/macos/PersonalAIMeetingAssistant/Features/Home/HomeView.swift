@@ -13,6 +13,9 @@ struct HomeView: View {
     @State private var selectedIds = Set<String>()
     @State private var showDeleteConfirm = false
 
+    // Inline rename
+    @State private var editingMeetingId: String?
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
@@ -153,20 +156,33 @@ struct HomeView: View {
                     MeetingRowView(
                         meeting: meeting,
                         isSelected: selectedIds.contains(meeting.id),
-                        selectionMode: selectionMode
-                    ) {
-                        if selectionMode {
-                            if selectedIds.contains(meeting.id) {
-                                selectedIds.remove(meeting.id)
+                        selectionMode: selectionMode,
+                        isEditing: Binding(
+                            get: { editingMeetingId == meeting.id },
+                            set: { v in editingMeetingId = v ? meeting.id : nil }
+                        ),
+                        onTap: {
+                            if selectionMode {
+                                if selectedIds.contains(meeting.id) {
+                                    selectedIds.remove(meeting.id)
+                                } else {
+                                    selectedIds.insert(meeting.id)
+                                }
                             } else {
-                                selectedIds.insert(meeting.id)
+                                selectedMeetingId = meeting.id
                             }
-                        } else {
-                            selectedMeetingId = meeting.id
+                        },
+                        onRename: { title in
+                            Task { await vm.renameMeeting(meeting, title: title) }
                         }
-                    }
+                    )
                     .contextMenu {
                         if !selectionMode {
+                            Button {
+                                editingMeetingId = meeting.id
+                            } label: {
+                                Label("Rename", systemImage: "pencil")
+                            }
                             Button {
                                 selectionMode = true
                                 selectedIds = [meeting.id]
@@ -261,71 +277,178 @@ struct MeetingRowView: View {
     let meeting: Meeting
     let isSelected: Bool
     let selectionMode: Bool
+    @Binding var isEditing: Bool
     let onTap: () -> Void
+    let onRename: (String) -> Void
 
     @State private var isHovered = false
+    @State private var editTitle = ""
+    @FocusState private var titleFocused: Bool
 
     var body: some View {
-        Button(action: onTap) {
-            HStack(spacing: 12) {
-                // Selection checkbox or icon
-                if selectionMode {
-                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: 18))
-                        .foregroundStyle(isSelected ? AppTheme.Colors.brandPrimary : AppTheme.Colors.tertiaryText)
-                        .animation(.easeInOut(duration: 0.15), value: isSelected)
-                } else {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 9)
-                            .fill(iconBg)
-                            .frame(width: 36, height: 36)
-                        Image(systemName: iconName)
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundStyle(iconFg)
-                    }
+        Group {
+            if isEditing {
+                editingRow
+            } else {
+                Button(action: onTap) {
+                    rowContent
                 }
+                .buttonStyle(.plain)
+                .onHover { isHovered = $0 }
+                .animation(.easeInOut(duration: 0.12), value: isHovered)
+            }
+        }
+        .onChange(of: isEditing) { _, editing in
+            if editing {
+                editTitle = meeting.title
+            }
+        }
+    }
 
-                // Title + metadata
-                VStack(alignment: .leading, spacing: 3) {
+    // MARK: Normal row
+
+    private var rowContent: some View {
+        HStack(spacing: 12) {
+            // Selection checkbox or icon
+            if selectionMode {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 18))
+                    .foregroundStyle(isSelected ? AppTheme.Colors.brandPrimary : AppTheme.Colors.tertiaryText)
+                    .animation(.easeInOut(duration: 0.15), value: isSelected)
+            } else {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 9)
+                        .fill(iconBg)
+                        .frame(width: 36, height: 36)
+                    Image(systemName: iconName)
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(iconFg)
+                }
+            }
+
+            // Title + metadata
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 4) {
                     Text(meeting.title)
                         .font(AppTheme.Fonts.listTitle)
                         .foregroundStyle(AppTheme.Colors.primaryText)
                         .lineLimit(1)
 
-                    HStack(spacing: 5) {
-                        Text(relativeDate(meeting.createdAt))
-                        if let dur = meeting.durationSeconds, dur > 0 {
-                            Text("·")
-                            Text(formatDuration(Int(dur)))
+                    if isHovered && !selectionMode {
+                        Button {
+                            isEditing = true
+                        } label: {
+                            Image(systemName: "pencil")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(AppTheme.Colors.tertiaryText)
                         }
+                        .buttonStyle(.plain)
+                        .help("Rename meeting")
                     }
-                    .font(AppTheme.Fonts.caption)
-                    .foregroundStyle(AppTheme.Colors.secondaryText)
                 }
 
-                Spacer(minLength: 8)
-
-                // People avatars
-                if !meeting.speakersPreview.isEmpty {
-                    peopleAvatars
+                HStack(spacing: 5) {
+                    Text(relativeDate(meeting.createdAt))
+                    if let dur = meeting.durationSeconds, dur > 0 {
+                        Text("·")
+                        Text(formatDuration(Int(dur)))
+                    }
                 }
-
-                // Status pill
-                statusView
+                .font(AppTheme.Fonts.caption)
+                .foregroundStyle(AppTheme.Colors.secondaryText)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 9)
-            .background(
-                RoundedRectangle(cornerRadius: AppTheme.Metrics.cornerRadius)
-                    .fill(isSelected
-                          ? AppTheme.Colors.brandLight
-                          : (isHovered ? AppTheme.Colors.hoverFill : Color.clear))
-            )
-            .contentShape(Rectangle())
+
+            Spacer(minLength: 8)
+
+            // People avatars
+            if !meeting.speakersPreview.isEmpty {
+                peopleAvatars
+            }
+
+            // Status pill
+            statusView
         }
-        .buttonStyle(.plain)
-        .onHover { isHovered = $0 }
-        .animation(.easeInOut(duration: 0.12), value: isHovered)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: AppTheme.Metrics.cornerRadius)
+                .fill(isSelected
+                      ? AppTheme.Colors.brandLight
+                      : (isHovered ? AppTheme.Colors.hoverFill : Color.clear))
+        )
+        .contentShape(Rectangle())
+    }
+
+    // MARK: Editing row
+
+    private var editingRow: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 9)
+                    .fill(iconBg)
+                    .frame(width: 36, height: 36)
+                Image(systemName: iconName)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(iconFg)
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    TextField("Meeting title", text: $editTitle)
+                        .textFieldStyle(.plain)
+                        .font(AppTheme.Fonts.listTitle)
+                        .focused($titleFocused)
+                        .onSubmit { commitRename() }
+                        .onChange(of: titleFocused) { _, focused in
+                            if !focused { commitRename() }
+                        }
+
+                    Button { commitRename() } label: {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 15))
+                            .foregroundStyle(AppTheme.Colors.brandPrimary)
+                    }
+                    .buttonStyle(.plain)
+
+                    Button { isEditing = false } label: {
+                        Image(systemName: "xmark.circle")
+                            .font(.system(size: 15))
+                            .foregroundStyle(AppTheme.Colors.tertiaryText)
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                HStack(spacing: 5) {
+                    Text(relativeDate(meeting.createdAt))
+                    if let dur = meeting.durationSeconds, dur > 0 {
+                        Text("·")
+                        Text(formatDuration(Int(dur)))
+                    }
+                }
+                .font(AppTheme.Fonts.caption)
+                .foregroundStyle(AppTheme.Colors.secondaryText)
+            }
+
+            Spacer(minLength: 8)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: AppTheme.Metrics.cornerRadius)
+                .fill(AppTheme.Colors.inputBackground)
+                .overlay(
+                    RoundedRectangle(cornerRadius: AppTheme.Metrics.cornerRadius)
+                        .stroke(AppTheme.Colors.brandPrimary.opacity(0.4), lineWidth: 1)
+                )
+        )
+        .onAppear { titleFocused = true }
+    }
+
+    private func commitRename() {
+        let trimmed = editTitle.trimmingCharacters(in: .whitespaces)
+        isEditing = false
+        guard !trimmed.isEmpty, trimmed != meeting.title else { return }
+        onRename(trimmed)
     }
 
     // MARK: People avatars

@@ -73,6 +73,19 @@ final class HomeViewModel: ObservableObject {
         }
     }
 
+    func renameMeeting(_ meeting: Meeting, title: String) async {
+        let trimmed = title.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        do {
+            let updated = try await APIClient.shared.renameMeeting(id: meeting.id, title: trimmed)
+            if let idx = meetings.firstIndex(where: { $0.id == meeting.id }) {
+                meetings[idx] = updated
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     func retryMeeting(_ meeting: Meeting) async {
         do {
             try await APIClient.shared.triggerProcessing(meetingId: meeting.id)
@@ -263,6 +276,17 @@ final class MeetingDetailViewModel: ObservableObject {
 
     deinit {
         pollingTask?.cancel()
+    }
+
+    func renameCurrentMeeting(title: String) async {
+        guard let m = meeting else { return }
+        let trimmed = title.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        do {
+            meeting = try await APIClient.shared.renameMeeting(id: m.id, title: trimmed)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     func retryProcessing() async {
