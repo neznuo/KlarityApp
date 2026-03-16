@@ -499,7 +499,7 @@ final class VideoFileMixer {
 /// Manages local recording using ScreenCaptureKit and AVCaptureSession.
 /// Supports two modes: system-audio-only (audio.wav) and screen+audio (audio.wav + recording.mp4).
 @MainActor
-final class AudioRecorder: NSObject, ObservableObject, SCStreamOutput, AVCaptureAudioDataOutputSampleBufferDelegate {
+final class AudioRecorder: NSObject, ObservableObject, SCStreamOutput {
     enum RecordingState {
         case idle, preparing, recording, paused
     }
@@ -510,7 +510,7 @@ final class AudioRecorder: NSObject, ObservableObject, SCStreamOutput, AVCapture
     @Published var errorMessage: String?
 
     private var stream: SCStream?
-    private var captureSession: AVCaptureSession?
+    private var audioEngine: AVAudioEngine?
 
     private let mixer = DualTrackMixer()
     // Wrapped in a `let` container so nonisolated SCStream callbacks can access it
@@ -621,7 +621,15 @@ final class AudioRecorder: NSObject, ObservableObject, SCStreamOutput, AVCapture
                 self.logger.info("Step 5: SCStream OK")
 
                 // Step 6: Start capture — this can take 15-20 seconds with Bluetooth audio
-                self.captureSession?.startRunning()
+                do {
+                    try self.audioEngine?.start()
+                } catch {
+                    let e = "Audio engine start failed: \(error.localizedDescription)"
+                    self.logger.error("\(e, privacy: .public)")
+                    self.errorMessage = e
+                    self.resetToIdle()
+                    return
+                }
                 self.logger.info("Step 6: Starting SCStream capture...")
                 do {
                     try await self.stream?.startCapture()
@@ -681,10 +689,9 @@ final class AudioRecorder: NSObject, ObservableObject, SCStreamOutput, AVCapture
         elapsedSeconds = 0
         pauseAccumulated = 0
 
-        // Stop AV Capture first
-        if let session = captureSession, session.isRunning {
-            session.stopRunning()
-        }
+        // Stop mic engine first
+        audioEngine?.inputNode.removeTap(onBus: 0)
+        audioEngine?.stop()
 
         // Stop SCStream next
         do {
@@ -716,20 +723,23 @@ final class AudioRecorder: NSObject, ObservableObject, SCStreamOutput, AVCapture
     // MARK: - Setup Subsystems
 
     private func setupMicrophone() throws {
-        captureSession = AVCaptureSession()
-        guard let session = captureSession else { return }
+        let engine = AVAudioEngine()
+        let inputNode = engine.inputNode
 
-        guard let micDevice = AVCaptureDevice.default(for: .audio) else {
-            throw NSError(domain: "AudioRecorder", code: 2,
-                          userInfo: [NSLocalizedDescriptionKey: "No microphone found."])
+        // Voice Processing IO provides hardware-level acoustic echo cancellation,
+        // suppressing the system audio playing through speakers from the mic signal.
+        try inputNode.setVoiceProcessingEnabled(true)
+
+        let hwFormat = inputNode.inputFormat(forBus: 0)
+        let mixer = self.mixer  // capture the reference for the tap closure
+
+        inputNode.installTap(onBus: 0, bufferSize: 4096, format: hwFormat) { buffer, time in
+            guard let sb = makeCMSampleBuffer(from: buffer, at: time) else { return }
+            mixer.writeMicAudio(buffer: sb)
         }
 
-        let micInput = try AVCaptureDeviceInput(device: micDevice)
-        if session.canAddInput(micInput) { session.addInput(micInput) }
-
-        let audioOutput = AVCaptureAudioDataOutput()
-        audioOutput.setSampleBufferDelegate(self, queue: DispatchQueue(label: "com.klarity.micQueue"))
-        if session.canAddOutput(audioOutput) { session.addOutput(audioOutput) }
+        engine.prepare()
+        audioEngine = engine
     }
 
     private func setupSystemAudio(display: SCDisplay, mode: RecordingMode) throws {
@@ -770,11 +780,6 @@ final class AudioRecorder: NSObject, ObservableObject, SCStreamOutput, AVCapture
         }
     }
 
-    nonisolated func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        os_log("[AudioRecorder] Mic buffer received")
-        mixer.writeMicAudio(buffer: sampleBuffer)
-    }
-
     // MARK: - Helpers
 
     private func resetToIdle() {
@@ -795,18 +800,9 @@ final class AudioRecorder: NSObject, ObservableObject, SCStreamOutput, AVCapture
         }
         stream = nil
         
-        if let session = captureSession {
-            for input in session.inputs {
-                session.removeInput(input)
-            }
-            for output in session.outputs {
-                if let audioOutput = output as? AVCaptureAudioDataOutput {
-                    audioOutput.setSampleBufferDelegate(nil, queue: nil)
-                }
-                session.removeOutput(output)
-            }
-        }
-        captureSession = nil
+        audioEngine?.inputNode.removeTap(onBus: 0)
+        audioEngine?.stop()
+        audioEngine = nil
     }
 
     // MARK: - Timer
@@ -828,6 +824,66 @@ final class AudioRecorder: NSObject, ObservableObject, SCStreamOutput, AVCapture
         timer?.invalidate()
         timer = nil
     }
+}
+
+// MARK: - AVAudioPCMBuffer → CMSampleBuffer conversion (used by AVAudioEngine mic tap)
+
+private func makeCMSampleBuffer(from pcmBuffer: AVAudioPCMBuffer, at time: AVAudioTime) -> CMSampleBuffer? {
+    guard pcmBuffer.frameLength > 0 else { return nil }
+
+    var asbd = pcmBuffer.format.streamDescription.pointee
+    var fmtDesc: CMAudioFormatDescription?
+    guard CMAudioFormatDescriptionCreate(
+        allocator: kCFAllocatorDefault,
+        asbd: &asbd,
+        layoutSize: 0, layout: nil,
+        magicCookieSize: 0, magicCookie: nil,
+        extensions: nil,
+        formatDescriptionOut: &fmtDesc
+    ) == noErr, let fmtDesc else { return nil }
+
+    let sampleRate = pcmBuffer.format.sampleRate
+    let pts: CMTime
+    if time.isSampleTimeValid {
+        pts = CMTime(value: CMTimeValue(time.sampleTime), timescale: CMTimeScale(sampleRate))
+    } else {
+        var info = mach_timebase_info_data_t()
+        mach_timebase_info(&info)
+        let nanos = Double(time.hostTime) * Double(info.numer) / Double(info.denom)
+        pts = CMTime(seconds: nanos / 1_000_000_000, preferredTimescale: CMTimeScale(sampleRate))
+    }
+
+    var timing = CMSampleTimingInfo(
+        duration: CMTime(value: 1, timescale: CMTimeScale(sampleRate)),
+        presentationTimeStamp: pts,
+        decodeTimeStamp: .invalid
+    )
+
+    var sampleBuffer: CMSampleBuffer?
+    guard CMSampleBufferCreate(
+        allocator: kCFAllocatorDefault,
+        dataBuffer: nil,
+        dataReady: false,
+        makeDataReadyCallback: nil,
+        refcon: nil,
+        formatDescription: fmtDesc,
+        sampleCount: CMItemCount(pcmBuffer.frameLength),
+        sampleTimingEntryCount: 1,
+        sampleTimingArray: &timing,
+        sampleSizeEntryCount: 0,
+        sampleSizeArray: nil,
+        sampleBufferOut: &sampleBuffer
+    ) == noErr, let sampleBuffer else { return nil }
+
+    guard CMSampleBufferSetDataBufferFromAudioBufferList(
+        sampleBuffer,
+        blockBufferAllocator: kCFAllocatorDefault,
+        blockBufferMemoryAllocator: kCFAllocatorDefault,
+        flags: kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment,
+        bufferList: pcmBuffer.audioBufferList
+    ) == noErr else { return nil }
+
+    return sampleBuffer
 }
 
 extension AudioRecorder {

@@ -2,9 +2,64 @@ import SwiftUI
 
 struct SettingsView: View {
     @StateObject private var vm = SettingsViewModel()
+    @EnvironmentObject private var appState: AppState
+    @AppStorage("klarityShowMenuBar") private var showMenuBarItem: Bool = true
 
     var body: some View {
         Form {
+            // ── Appearance ───────────────────────────────────────────────────
+            Section("Appearance") {
+                Picker("Color Scheme", selection: $appState.colorSchemePreference) {
+                    Text("System (follow macOS)").tag("system")
+                    Text("Light").tag("light")
+                    Text("Dark").tag("dark")
+                }
+                .pickerStyle(.radioGroup)
+
+                Toggle("Show Klarity in menu bar", isOn: $showMenuBarItem)
+                    .help("Shows a menu bar icon for quick access to recording controls without opening the app.")
+            }
+
+            // ── System Requirements ──────────────────────────────────────────
+            Section {
+                if appState.dependencies == nil {
+                    HStack {
+                        ProgressView().scaleEffect(0.7)
+                        Text("Checking dependencies…")
+                            .foregroundStyle(.secondary)
+                            .font(AppTheme.Fonts.body)
+                    }
+                } else if let deps = appState.dependencies {
+                    ForEach(deps.checks) { check in
+                        LabeledContent(check.name) {
+                            HStack(spacing: 6) {
+                                Image(systemName: check.isOk ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                                    .foregroundStyle(check.isOk ? Color.green : (check.required ? Color.red : Color.orange))
+                                Text(check.detail)
+                                    .font(AppTheme.Fonts.caption)
+                                    .foregroundStyle(check.isOk ? .secondary : (check.required ? Color.red : Color.orange))
+                                    .lineLimit(1)
+                            }
+                        }
+                    }
+                }
+
+                Button {
+                    Task { await appState.checkDependencies() }
+                } label: {
+                    Label("Re-check", systemImage: "arrow.clockwise")
+                        .font(AppTheme.Fonts.caption)
+                }
+                .buttonStyle(.bordered)
+            } header: {
+                Text("System Requirements")
+            } footer: {
+                if let deps = appState.dependencies, !deps.allRequiredOk {
+                    Text("⚠ One or more required dependencies are missing. Recording and transcription will fail until resolved.")
+                        .foregroundStyle(.red)
+                }
+            }
+
             Section("Transcription") {
                 Picker("Provider", selection: $vm.settings.defaultTranscriptionProvider) {
                     Text("ElevenLabs Scribe").tag("elevenlabs")
@@ -14,13 +69,58 @@ struct SettingsView: View {
             }
 
             Section("LLM Provider") {
-                Picker("Default Provider", selection: $vm.settings.defaultLlmProvider) {
+                Picker("Provider", selection: $vm.settings.defaultLlmProvider) {
                     Text("Ollama (Local)").tag("ollama")
                     Text("OpenAI").tag("openai")
                     Text("Anthropic").tag("anthropic")
                     Text("Gemini").tag("gemini")
                 }
-                TextField("Default Model", text: $vm.settings.defaultLlmModel)
+                .onChange(of: vm.settings.defaultLlmProvider) { _, newProvider in
+                    // Auto-select the recommended affordable model for the new provider
+                    vm.settings.defaultLlmModel = Self.defaultModel(for: newProvider)
+                    if newProvider == "ollama" {
+                        Task { await vm.loadOllamaModels() }
+                    }
+                }
+
+                switch vm.settings.defaultLlmProvider {
+                case "ollama":
+                    if vm.isLoadingOllamaModels {
+                        LabeledContent("Model") {
+                            HStack(spacing: 6) {
+                                ProgressView().scaleEffect(0.6)
+                                Text("Loading models…").foregroundStyle(.secondary)
+                            }
+                        }
+                    } else if vm.ollamaModels.isEmpty {
+                        TextField("Model", text: $vm.settings.defaultLlmModel)
+                            .help("Ollama not reachable or no models pulled. Enter a model name manually.")
+                    } else {
+                        Picker("Model", selection: $vm.settings.defaultLlmModel) {
+                            ForEach(vm.ollamaModels, id: \.self) { Text($0).tag($0) }
+                        }
+                    }
+                case "openai":
+                    Picker("Model", selection: $vm.settings.defaultLlmModel) {
+                        Text("gpt-4o-mini  (recommended — affordable)").tag("gpt-4o-mini")
+                        Text("gpt-4o").tag("gpt-4o")
+                        Text("gpt-4-turbo").tag("gpt-4-turbo")
+                    }
+                case "anthropic":
+                    Picker("Model", selection: $vm.settings.defaultLlmModel) {
+                        Text("claude-3-5-haiku-20241022  (recommended — affordable)").tag("claude-3-5-haiku-20241022")
+                        Text("claude-3-5-sonnet-20241022").tag("claude-3-5-sonnet-20241022")
+                        Text("claude-3-opus-20240229").tag("claude-3-opus-20240229")
+                    }
+                case "gemini":
+                    Picker("Model", selection: $vm.settings.defaultLlmModel) {
+                        Text("gemini-2.5-flash-lite  (recommended — affordable)").tag("gemini-2.5-flash-lite")
+                        Text("gemini-2.5-flash").tag("gemini-2.5-flash")
+                        Text("gemini-2.5-pro").tag("gemini-2.5-pro")
+                    }
+                default:
+                    TextField("Model", text: $vm.settings.defaultLlmModel)
+                }
             }
 
             Section("API Keys") {
@@ -28,6 +128,30 @@ struct SettingsView: View {
                 SecureField("Anthropic API Key", text: $vm.settings.anthropicApiKey)
                 SecureField("Gemini API Key", text: $vm.settings.geminiApiKey)
                 TextField("Ollama Endpoint", text: $vm.settings.ollamaEndpoint)
+            }
+
+            Section {
+                LabeledContent("Google Calendar") {
+                    if vm.settings.googleCalendarConnected == true {
+                        Button("Disconnect") { disconnectCalendar(.google) }
+                            .foregroundStyle(AppTheme.Colors.accentRed)
+                    } else {
+                        Button("Connect") { Task { await connectCalendar(.google) } }
+                    }
+                }
+                LabeledContent("Outlook / Microsoft 365") {
+                    if vm.settings.outlookConnected == true {
+                        Button("Disconnect") { disconnectCalendar(.microsoft) }
+                            .foregroundStyle(AppTheme.Colors.accentRed)
+                    } else {
+                        Button("Connect") { Task { await connectCalendar(.microsoft) } }
+                    }
+                }
+            } header: {
+                Text("Calendar Sync")
+            } footer: {
+                Text("Register OAuth apps first: Google Cloud Console (redirect: klarity://oauth/google/callback) and Azure Portal (redirect: klarity://oauth/microsoft/callback). Then add the client IDs to Info.plist as KlarityGoogleClientID / KlarityMicrosoftClientID.")
+                    .foregroundStyle(.secondary)
             }
 
             Section("Storage") {
@@ -105,5 +229,29 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .navigationTitle("Settings")
         .task { await vm.load() }
+    }
+
+    private func connectCalendar(_ provider: CalendarSource) async {
+        do {
+            try await CalendarService.shared.authenticate(provider: provider)
+            await vm.load()
+        } catch {
+            // Errors surface in the system browser; silently ignore cancellations
+        }
+    }
+
+    private func disconnectCalendar(_ provider: CalendarSource) {
+        CalendarService.shared.disconnect(provider)
+        Task { await vm.load() }
+    }
+
+    /// Recommended affordable model for each provider.
+    static func defaultModel(for provider: String) -> String {
+        switch provider {
+        case "openai":    return "gpt-4o-mini"
+        case "anthropic": return "claude-3-5-haiku-20241022"
+        case "gemini":    return "gemini-2.5-flash-lite"
+        default:          return "llama3"
+        }
     }
 }

@@ -7,6 +7,7 @@ from app.schemas.meeting import (
     MeetingCreate,
     MeetingOut,
     MeetingListOut,
+    MeetingPatch,
     MeetingStatusUpdate,
 )
 from app.schemas.person import PersonCreate, PersonUpdate, PersonOut
@@ -21,7 +22,7 @@ from app.schemas.task import TaskOut
 from app.schemas.settings import SettingsOut, SettingsPatch
 
 __all__ = [
-    "MeetingCreate", "MeetingOut", "MeetingListOut", "MeetingStatusUpdate",
+    "MeetingCreate", "MeetingOut", "MeetingListOut", "MeetingPatch", "MeetingStatusUpdate",
     "PersonCreate", "PersonUpdate", "PersonOut",
     "SpeakerClusterOut", "AssignSpeakerRequest", "MergeSpeakersRequest",
     "TranscriptSegmentOut",

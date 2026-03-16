@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-The macOS SwiftUI client lives in `apps/macos/PersonalAIMeetingAssistant/`, organized by feature views in `Features/`, shared logic in `Services/`, and common models or view models alongside their consumers. Backend code resides in `backend/app/` with `api/`, `models/`, `schemas/`, `services/`, and `workers/` modules; reusable GPT prompts sit in `backend/prompts/`. Tests for the backend stay in `backend/tests/`, SwiftUI previews belong beside their feature views, and shared assets or docs live in `docs/`. Use `scripts/bundle_backend.sh` to bundle the Python runtime into the macOS app during Xcode builds.
+The macOS SwiftUI client lives in `apps/macos/PersonalAIMeetingAssistant/`, organized by feature views in `Features/`, shared logic in `Services/`, and common models or view models alongside their consumers. Backend code resides in `backend/app/` with `api/`, `models/`, `schemas/`, `services/`, and `workers/` modules; reusable GPT prompts sit in `backend/prompts/`. Tests for the backend stay in `backend/tests/`, SwiftUI previews belong beside their feature views, and shared assets or docs live in `docs/`. Use `i ha` to bundle the Python runtime into the macOS app during Xcode builds.
 
 ## Build, Test, and Development Commands
 Run `cd backend && python3 -m venv venv && pip install -r requirements.txt` to prepare the embedded backend environment. Launch the API locally with `cd backend && uvicorn app.main:app --host 127.0.0.1 --port 8765 --reload` for debugging. Execute the backend test suite through `cd backend && pytest tests/ -v`, and lint Python code with `ruff check backend/` (add `--fix` when appropriate).

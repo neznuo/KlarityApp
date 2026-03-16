@@ -30,6 +30,9 @@ class Meeting(Base):
     transcript_json_path: Mapped[str | None] = mapped_column(String, nullable=True)
     summary_json_path: Mapped[str | None] = mapped_column(String, nullable=True)
 
+    calendar_event_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    calendar_source: Mapped[str | None] = mapped_column(String, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=func.now(), onupdate=func.now(), nullable=False

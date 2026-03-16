@@ -1,5 +1,21 @@
 import Foundation
 
+// MARK: - Calendar
+
+enum CalendarSource: String, Codable, CaseIterable {
+    case google
+    case microsoft
+}
+
+struct CalendarEvent: Identifiable {
+    let id: String
+    let title: String
+    let startDate: Date
+    let endDate: Date
+    let calendarSource: CalendarSource
+    let onlineMeetingUrl: String?
+}
+
 // MARK: - Meeting
 
 /// Mirrored from backend MeetingOut schema.
@@ -16,6 +32,9 @@ struct Meeting: Identifiable, Codable, Hashable {
     var summaryJsonPath: String?
     var createdAt: Date
     var updatedAt: Date?
+    var speakersPreview: [String]
+    var calendarEventId: String?
+    var calendarSource: String?
 
     enum CodingKeys: String, CodingKey {
         case id, title, status
@@ -28,6 +47,28 @@ struct Meeting: Identifiable, Codable, Hashable {
         case summaryJsonPath = "summary_json_path"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
+        case speakersPreview = "speakers_preview"
+        case calendarEventId = "calendar_event_id"
+        case calendarSource = "calendar_source"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        status = try c.decode(MeetingStatus.self, forKey: .status)
+        startedAt = try c.decodeIfPresent(Date.self, forKey: .startedAt)
+        endedAt = try c.decodeIfPresent(Date.self, forKey: .endedAt)
+        durationSeconds = try c.decodeIfPresent(Double.self, forKey: .durationSeconds)
+        audioFilePath = try c.decodeIfPresent(String.self, forKey: .audioFilePath)
+        normalizedAudioPath = try c.decodeIfPresent(String.self, forKey: .normalizedAudioPath)
+        transcriptJsonPath = try c.decodeIfPresent(String.self, forKey: .transcriptJsonPath)
+        summaryJsonPath = try c.decodeIfPresent(String.self, forKey: .summaryJsonPath)
+        createdAt = try c.decode(Date.self, forKey: .createdAt)
+        updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt)
+        speakersPreview = (try? c.decodeIfPresent([String].self, forKey: .speakersPreview)) ?? []
+        calendarEventId = try c.decodeIfPresent(String.self, forKey: .calendarEventId)
+        calendarSource = try c.decodeIfPresent(String.self, forKey: .calendarSource)
     }
 }
 
@@ -143,6 +184,7 @@ struct Person: Identifiable, Codable {
     var meetingCount: Int
     var createdAt: Date
     var updatedAt: Date
+    var hasVoiceEmbedding: Bool
 
     enum CodingKeys: String, CodingKey {
         case id, notes
@@ -151,6 +193,19 @@ struct Person: Identifiable, Codable {
         case meetingCount = "meeting_count"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
+        case hasVoiceEmbedding = "has_voice_embedding"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        displayName = try c.decode(String.self, forKey: .displayName)
+        notes = try c.decodeIfPresent(String.self, forKey: .notes)
+        lastSeenAt = try c.decodeIfPresent(Date.self, forKey: .lastSeenAt)
+        meetingCount = try c.decode(Int.self, forKey: .meetingCount)
+        createdAt = try c.decode(Date.self, forKey: .createdAt)
+        updatedAt = try c.decode(Date.self, forKey: .updatedAt)
+        hasVoiceEmbedding = (try? c.decodeIfPresent(Bool.self, forKey: .hasVoiceEmbedding)) ?? false
     }
 }
 
@@ -194,6 +249,29 @@ struct MeetingTask: Identifiable, Codable {
     }
 }
 
+// MARK: - Dependency Health
+
+struct DependencyCheck: Identifiable, Codable {
+    let key: String
+    let name: String
+    let status: String   // "ok" | "missing" | "not_configured"
+    let detail: String
+    let required: Bool
+
+    var id: String { key }
+    var isOk: Bool { status == "ok" }
+}
+
+struct DependenciesResult: Codable {
+    let allRequiredOk: Bool
+    let checks: [DependencyCheck]
+
+    enum CodingKeys: String, CodingKey {
+        case allRequiredOk = "all_required_ok"
+        case checks
+    }
+}
+
 // MARK: - App Settings
 
 struct AppSettings: Codable {
@@ -209,6 +287,8 @@ struct AppSettings: Codable {
     var speakerSuggestThreshold: Double
     var speakerAutoAssignThreshold: Double
     var speakerDuplicateThreshold: Double
+    var googleCalendarConnected: Bool? = nil
+    var outlookConnected: Bool? = nil
 
     enum CodingKeys: String, CodingKey {
         case ollamaEndpoint = "ollama_endpoint"
@@ -223,6 +303,8 @@ struct AppSettings: Codable {
         case speakerSuggestThreshold = "speaker_suggest_threshold"
         case speakerAutoAssignThreshold = "speaker_auto_assign_threshold"
         case speakerDuplicateThreshold = "speaker_duplicate_threshold"
+        case googleCalendarConnected = "google_calendar_connected"
+        case outlookConnected = "outlook_connected"
     }
 
     static var `default`: AppSettings {

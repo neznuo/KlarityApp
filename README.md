@@ -21,6 +21,7 @@ SwiftUI macOS App  →  Local FastAPI Backend  →  ElevenLabs / Resemblyzer / O
 | STT       | ElevenLabs Scribe                   |
 | Embeddings| Resemblyzer                         |
 | LLM       | OpenAI / Anthropic / Gemini / Ollama|
+| Calendar  | Google Calendar API v3 + Microsoft Graph (PKCE OAuth, Swift-only) |
 
 ---
 
@@ -36,7 +37,7 @@ KlarityApp/
 │           ├── App/                # Entry point, ContentView, termination handler
 │           ├── Models/             # Swift data models
 │           ├── Services/           # APIClient, AudioRecorder, KeychainService,
-│           │                       # BackendProcessManager
+│           │                       # BackendProcessManager, CalendarService
 │           ├── ViewModels/         # Observable ViewModels
 │           └── Features/
 │               ├── Home/           # Meeting list + search
@@ -141,8 +142,8 @@ Users see a single `.app`. There is no separate server to start.
 
 | Step | Actor | Description |
 |------|-------|-------------|
-| 1    | User  | Click **New Recording**, enter meeting title |
-| 2    | App   | Create meeting record, start capture: SCStream (system audio) + AVCaptureSession (mic) recorded to separate temp .m4a files |
+| 1    | User  | Click **New Recording** — upcoming calendar events appear as one-tap pills to auto-fill the title |
+| 2    | App   | Create meeting record (with optional `calendar_event_id`/`calendar_source`), start capture: SCStream (system audio) + AVCaptureSession (mic) |
 | 3    | User  | Stop recording when meeting ends |
 | 4    | App   | Mix system + mic temp files into final `audio.m4a` via AVMutableComposition export |
 | 5    | Backend | Preprocess audio → Transcribe (ElevenLabs) → Embed speakers |
@@ -153,6 +154,40 @@ Users see a single `.app`. There is no separate server to start.
 ---
 
 ## Configuration
+
+### Calendar Sync (optional)
+
+Connects Google Calendar and/or Outlook so upcoming meetings appear as auto-fill pills in the New Recording sheet. All OAuth tokens are stored locally in the macOS Keychain — nothing is sent to the backend except a connected/disconnected boolean flag.
+
+#### 1. Register OAuth apps
+
+**Google Calendar**
+1. Go to [Google Cloud Console](https://console.cloud.google.com/) → APIs & Services → Credentials
+2. Create an **OAuth 2.0 Client ID**, application type **iOS** (works for macOS PKCE flows)
+3. Set the redirect URI to: `klarity://oauth/google/callback`
+4. Enable the **Google Calendar API** for the project
+
+**Microsoft Outlook**
+1. Go to [Azure Portal](https://portal.azure.com/) → App registrations → New registration
+2. Add a redirect URI (platform: **Mobile and desktop applications**): `klarity://oauth/microsoft/callback`
+3. Under API permissions, add `Calendars.Read` and `offline_access` (Microsoft Graph)
+
+#### 2. Add client IDs to the app
+
+Open `apps/macos/PersonalAIMeetingAssistant/App/Info.plist` and replace the placeholder values:
+
+```xml
+<key>KlarityGoogleClientID</key>
+<string>YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com</string>
+<key>KlarityMicrosoftClientID</key>
+<string>YOUR_AZURE_APPLICATION_CLIENT_ID</string>
+```
+
+#### 3. Connect in-app
+
+Open **Settings → Calendar Sync** and click **Connect** next to each provider. A browser window will open for OAuth authorization. Once approved, upcoming meetings (next 24 hours) appear as pills when you start a new recording.
+
+---
 
 ### Transcription
 - Primary: **ElevenLabs Scribe** (`ELEVENLABS_API_KEY`)
@@ -196,7 +231,8 @@ pytest tests/ -v
 - **No live transcription** in V1 — post-meeting processing only
 - **Summary generation is always manual** — user clicks the button
 - **All data stays local** unless cloud API is explicitly configured
-- API keys for sensitive providers stored in **macOS Keychain** (Swift) and env variables (backend)
+- API keys and OAuth tokens for all providers stored in **macOS Keychain** (Swift) and env variables (backend)
+- **Calendar OAuth is handled entirely in Swift** — backend only stores `calendar_event_id` and `calendar_source` string fields on the Meeting record
 
 ## Build App Locally
 ./scripts/build.sh 2>&1 | tail -30

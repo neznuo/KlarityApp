@@ -18,6 +18,8 @@ class SettingsOut(BaseModel):
     speaker_suggest_threshold: float
     speaker_auto_assign_threshold: float
     speaker_duplicate_threshold: float
+    google_calendar_connected: bool = False
+    outlook_connected: bool = False
 
 
 class SettingsPatch(BaseModel):
@@ -33,3 +35,5 @@ class SettingsPatch(BaseModel):
     speaker_suggest_threshold: float | None = None
     speaker_auto_assign_threshold: float | None = None
     speaker_duplicate_threshold: float | None = None
+    google_calendar_connected: bool | None = None
+    outlook_connected: bool | None = None

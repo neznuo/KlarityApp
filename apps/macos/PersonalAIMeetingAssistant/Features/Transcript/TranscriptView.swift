@@ -127,37 +127,39 @@ struct TranscriptRowView: View {
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 16) {
-            
-            // Avatar Column
-            Circle()
-                .fill(avatarColor(for: speakerName))
-                .frame(width: 36, height: 36)
-                .overlay(Text(initials(for: speakerName)).font(AppTheme.Fonts.listTitle).foregroundColor(.white))
-            
-            // Content Column
-            VStack(alignment: .leading, spacing: 4) {
-                // Name & Timecode
+        HStack(alignment: .top, spacing: 14) {
+            // Avatar
+            ZStack {
+                Circle()
+                    .fill(avatarColor(for: speakerName).opacity(0.18))
+                    .frame(width: 34, height: 34)
+                Text(initials(for: speakerName))
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(avatarColor(for: speakerName))
+            }
+
+            // Content
+            VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 8) {
                     Text(speakerName)
                         .font(AppTheme.Fonts.listTitle)
-                        .foregroundColor(AppTheme.Colors.primaryText)
-                    
+                        .foregroundStyle(AppTheme.Colors.primaryText)
+
                     Button(action: onSeek) {
                         Text(formatTimestamp(segment.startMs))
                             .font(AppTheme.Fonts.smallMono)
-                            .foregroundColor(AppTheme.Colors.brandPrimary)
-                            .padding(.horizontal, 4)
+                            .foregroundStyle(AppTheme.Colors.brandPrimary)
+                            .padding(.horizontal, 5)
                             .padding(.vertical, 2)
-                            .background(AppTheme.Colors.brandPrimary.opacity(0.1))
-                            .cornerRadius(4)
+                            .background(AppTheme.Colors.brandSecondary)
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
                     }
                     .buttonStyle(.plain)
-                    .help("Jump to this timestamp")
-                    
+                    .help("Jump to this timestamp in the recording")
+
                     if isHovered {
                         Menu {
-                            Section("Assign speaker to…") {
+                            Section("Assign to…") {
                                 ForEach(people) { person in
                                     Button(person.displayName) { onAssign(person) }
                                 }
@@ -165,29 +167,32 @@ struct TranscriptRowView: View {
                                 Button("Create new person…") { onCreateNew() }
                             }
                         } label: {
-                            Image(systemName: "pencil")
-                                .font(AppTheme.Fonts.caption)
-                                .foregroundColor(AppTheme.Colors.secondaryText)
+                            Image(systemName: "person.badge.plus")
+                                .font(.system(size: 11))
+                                .foregroundStyle(AppTheme.Colors.secondaryText)
                         }
                         .menuStyle(.borderlessButton)
-                        .frame(width: 16) // Prevent layout jumping when hovered
+                        .frame(width: 18)
                     }
                 }
-                
-                // Spoken Text
+
                 Text(segment.text)
                     .font(AppTheme.Fonts.body)
-                    .foregroundColor(AppTheme.Colors.primaryText.opacity(0.9))
-                    .lineSpacing(4)
-                    .fixedSize(horizontal: false, vertical: true) // Prevents truncation
-                    .textSelection(.enabled) // Enable copy/pasting text
+                    .foregroundStyle(AppTheme.Colors.primaryText)
+                    .lineSpacing(5)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
             }
             Spacer()
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .background(isHovered ? AppTheme.Colors.border.opacity(0.3) : Color.clear)
-        .cornerRadius(AppTheme.Metrics.cornerRadius)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(
+            isHovered
+                ? AppTheme.Colors.cardBackground
+                : Color.clear
+        )
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Metrics.cornerRadius))
         .onHover { isHovered = $0 }
     }
 
@@ -212,9 +217,15 @@ struct TranscriptRowView: View {
         return "?"
     }
     
-    // Deterministic color based on speaker name
+    // Deterministic color — uses indigo/teal/coral palette for a cohesive feel
     private func avatarColor(for name: String) -> Color {
-        let colors: [Color] = [.blue, .purple, .orange, .green, .indigo, .pink]
+        let colors: [Color] = [
+            Color.indigo, Color.teal,
+            Color(red: 0.85, green: 0.35, blue: 0.25),  // coral
+            Color(red: 0.25, green: 0.65, blue: 0.55),  // emerald
+            Color.purple,
+            Color(red: 0.70, green: 0.45, blue: 0.10),  // amber
+        ]
         let index = abs(name.hashValue) % colors.count
         return colors[index]
     }

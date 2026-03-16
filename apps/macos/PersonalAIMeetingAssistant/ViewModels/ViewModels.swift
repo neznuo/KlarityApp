@@ -93,6 +93,8 @@ final class RecordingViewModel: ObservableObject {
     @Published var isCreating = false
     @Published var isStopping = false
     @Published var errorMessage: String?
+    /// Set after stopAndProcess() completes. Observers (HomeView) watch this to navigate and refresh.
+    @Published var completedMeeting: Meeting?
 
     let recorder = AudioRecorder()
 
@@ -109,7 +111,7 @@ final class RecordingViewModel: ObservableObject {
     var isPaused:    Bool { recorder.state == .paused }
     var isPreparing: Bool { recorder.state == .preparing }
 
-    func startNewMeeting() async {
+    func startNewMeeting(calendarEventId: String? = nil, calendarSource: String? = nil) async {
         guard !meetingTitle.trimmingCharacters(in: .whitespaces).isEmpty else {
             errorMessage = "Please enter a meeting title."
             return
@@ -120,7 +122,11 @@ final class RecordingViewModel: ObservableObject {
         isCreating = true
         defer { isCreating = false }
         do {
-            let meeting = try await APIClient.shared.createMeeting(title: meetingTitle)
+            let meeting = try await APIClient.shared.createMeeting(
+                title: meetingTitle,
+                calendarEventId: calendarEventId,
+                calendarSource: calendarSource
+            )
             currentMeeting = meeting
             let audioURL = audioOutputURL(for: meeting.id)
             let videoURL = recordingMode == .screenAndSystemAudio ? videoOutputURL(for: meeting.id) : nil
@@ -138,37 +144,36 @@ final class RecordingViewModel: ObservableObject {
         recorder.resumeRecording()
     }
 
-    func stopAndProcess() async -> Meeting? {
-        guard let meeting = currentMeeting else { return nil }
-        guard !isStopping else { return nil }
+    func stopAndProcess() async {
+        guard let meeting = currentMeeting else { return }
+        guard !isStopping else { return }
         isStopping = true
         defer { isStopping = false }
 
-        // Capture elapsed time before stopRecording() resets it to zero.
         let capturedDuration = recorder.elapsedSeconds > 0 ? recorder.elapsedSeconds : nil
         let fileURL = await recorder.stopRecording()
 
-        // Let the backend know where the file is so it can process it
         do {
+            let result: Meeting
             if let path = fileURL?.path {
-                let updatedMeeting = try await APIClient.shared.updateMeeting(
+                let updated = try await APIClient.shared.updateMeeting(
                     id: meeting.id,
                     audioFilePath: path,
                     durationSeconds: capturedDuration
                 )
                 try await APIClient.shared.triggerProcessing(meetingId: meeting.id)
-                currentMeeting = nil
-                meetingTitle = ""
-                return updatedMeeting
+                result = updated
             } else {
-                // If we couldn't get a file path for some reason, just return the meeting
-                currentMeeting = nil
-                meetingTitle = ""
-                return meeting
+                result = meeting
             }
+            currentMeeting = nil
+            meetingTitle = ""
+            completedMeeting = result   // HomeView observes this to navigate
         } catch {
             errorMessage = error.localizedDescription
-            return meeting // Return the old one so HomeView can still show it, even if processing failed to start
+            currentMeeting = nil
+            meetingTitle = ""
+            completedMeeting = meeting
         }
     }
 
@@ -199,8 +204,10 @@ final class MeetingDetailViewModel: ObservableObject {
     @Published var tasks: [MeetingTask] = []
     @Published var people: [Person] = []
     @Published var isLoading = false
-    @Published var isSummarizing = false
     @Published var errorMessage: String?
+
+    /// Derived from the meeting's own status so it stays in sync with polling.
+    var isSummarizing: Bool { meeting?.status == .summarizing }
 
     private var pollingTask: Task<Void, Never>?
 
@@ -236,11 +243,15 @@ final class MeetingDetailViewModel: ObservableObject {
                     self.meeting = updated
                     
                     if !updated.status.needsPolling {
-                        // Finished processing! Fetch the newly generated resources
-                        self.transcript = (try? await APIClient.shared.fetchTranscript(meetingId: meetingId)) ?? []
-                        self.speakers   = (try? await APIClient.shared.fetchSpeakers(meetingId: meetingId)) ?? []
-                        self.summary    = try? await APIClient.shared.fetchSummary(meetingId: meetingId)
-                        self.tasks      = (try? await APIClient.shared.fetchTasks(meetingId: meetingId)) ?? []
+                        if updated.status == .failed {
+                            self.errorMessage = "Processing failed. Check your API keys and try again."
+                        } else {
+                            // Finished — refresh all derived data
+                            self.transcript = (try? await APIClient.shared.fetchTranscript(meetingId: meetingId)) ?? []
+                            self.speakers   = (try? await APIClient.shared.fetchSpeakers(meetingId: meetingId)) ?? []
+                            self.summary    = try? await APIClient.shared.fetchSummary(meetingId: meetingId)
+                            self.tasks      = (try? await APIClient.shared.fetchTasks(meetingId: meetingId)) ?? []
+                        }
                         break
                     }
                 } catch {
@@ -264,21 +275,22 @@ final class MeetingDetailViewModel: ObservableObject {
         }
     }
 
-    func generateSummary(provider: String = "ollama", model: String = "llama3") async {
+    func generateSummary() async {
         guard let meeting else { return }
-        isSummarizing = true
         do {
-            try await APIClient.shared.generateSummary(meetingId: meeting.id, provider: provider, model: model)
-            // Poll briefly for completion
-            for _ in 0..<20 {
-                try? await Task.sleep(nanoseconds: 3_000_000_000) // 3s
-                summary = try? await APIClient.shared.fetchSummary(meetingId: meeting.id)
-                if summary != nil { break }
-            }
+            // Fetch live settings so we use whatever provider+model the user has configured
+            let currentSettings = try await APIClient.shared.fetchSettings()
+            try await APIClient.shared.generateSummary(
+                meetingId: meeting.id,
+                provider: currentSettings.defaultLlmProvider,
+                model: currentSettings.defaultLlmModel
+            )
+            // Fetch the updated meeting (status will now be "summarizing") then hand off to polling
+            self.meeting = try await APIClient.shared.fetchMeeting(id: meeting.id)
+            startPolling(meetingId: meeting.id)
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = "Failed to start summary: \(error.localizedDescription)"
         }
-        isSummarizing = false
     }
 
     func assignSpeaker(cluster: SpeakerCluster, person: Person) async {
@@ -339,6 +351,17 @@ final class PeopleViewModel: ObservableObject {
             errorMessage = error.localizedDescription
         }
     }
+
+    func recomputeEmbedding(_ person: Person) async {
+        do {
+            try await APIClient.shared.recomputePersonEmbedding(personId: person.id)
+            // Reload after a short delay so has_voice_embedding reflects the new file
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            await load()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
 }
 
 // MARK: - SettingsViewModel
@@ -346,6 +369,8 @@ final class PeopleViewModel: ObservableObject {
 @MainActor
 final class SettingsViewModel: ObservableObject {
     @Published var settings: AppSettings = .default
+    @Published var ollamaModels: [String] = []
+    @Published var isLoadingOllamaModels = false
     @Published var isLoading = false
     @Published var isSaving = false
     @Published var errorMessage: String?
@@ -353,8 +378,19 @@ final class SettingsViewModel: ObservableObject {
     func load() async {
         isLoading = true
         defer { isLoading = false }
-        do { settings = try await APIClient.shared.fetchSettings() }
+        do {
+            settings = try await APIClient.shared.fetchSettings()
+            if settings.defaultLlmProvider == "ollama" {
+                await loadOllamaModels()
+            }
+        }
         catch { errorMessage = error.localizedDescription }
+    }
+
+    func loadOllamaModels() async {
+        isLoadingOllamaModels = true
+        defer { isLoadingOllamaModels = false }
+        ollamaModels = (try? await APIClient.shared.fetchOllamaModels()) ?? []
     }
 
     func save() async {
@@ -413,26 +449,45 @@ final class PermissionsViewModel: ObservableObject {
         let granted = CGRequestScreenCaptureAccess()
         hasScreenAccess = granted
     }
-    
+
     func resetPermissions() {
         // macOS 14+ caches TCC database states in memory for actively running applications.
         // If an app asks to reset its *own* permissions while running, macOS silently ignores it.
         // We must terminate the app first, then run tccutil from a detached background script.
         let bundleID = Bundle.main.bundleIdentifier ?? "com.klarity.meeting-assistant"
         let bundlePath = Bundle.main.bundlePath
-        
+
         let script = """
         sleep 1
         /usr/bin/tccutil reset All \(bundleID)
         open "\(bundlePath)"
         """
-        
+
         let relaunch = Process()
         relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")
         relaunch.arguments = ["-c", script]
         try? relaunch.run()
-        
+
         // Quit the app immediately so the script can execute the reset while we are dead
         NSApplication.shared.terminate(nil)
+    }
+}
+
+// MARK: - CalendarViewModel
+
+@MainActor
+final class CalendarViewModel: ObservableObject {
+    @Published var upcomingEvents: [CalendarEvent] = []
+    @Published var isLoadingEvents = false
+
+    var hasAnyCalendarConnected: Bool {
+        CalendarService.shared.isConnected(.google) || CalendarService.shared.isConnected(.microsoft)
+    }
+
+    func loadEvents() async {
+        guard hasAnyCalendarConnected else { return }
+        isLoadingEvents = true
+        defer { isLoadingEvents = false }
+        upcomingEvents = await CalendarService.shared.fetchAllEvents()
     }
 }

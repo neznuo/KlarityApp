@@ -66,6 +66,10 @@ class Settings(BaseSettings):
     speaker_auto_assign_threshold: float = 0.90
     speaker_duplicate_threshold: float = 0.82
 
+    # Calendar integrations (connection state stored in-memory; updated by Swift via PATCH /settings)
+    google_calendar_connected: bool = False
+    outlook_connected: bool = False
+
 
 # Singleton instance consumed throughout the app
 settings = Settings()

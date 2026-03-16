@@ -78,6 +78,32 @@ def assign_speaker(
     else:
         raise HTTPException(status_code=400, detail="Provide person_id or new_person_name")
 
+    # ── Save the cluster's voice embedding as this person's voice model ──────
+    # This is what makes speaker recognition work in future meetings.
+    from app.services.storage.file_layout import voice_embedding_path
+    import shutil
+    cluster_emb = voice_embedding_path(f"cluster_{cluster.id}")
+    if cluster_emb.exists():
+        person_emb = voice_embedding_path(person.id)
+        try:
+            shutil.copy2(str(cluster_emb), str(person_emb))
+        except Exception:
+            pass  # Non-fatal — recognition just won't work for this person yet
+
+    # ── Update person stats ───────────────────────────────────────────────────
+    from datetime import datetime, timezone
+    from sqlalchemy import func as sqlfunc
+    meeting = db.get(Meeting, meeting_id)
+    if meeting and meeting.started_at:
+        person.last_seen_at = meeting.started_at
+    # Recount meetings where this person appears
+    person.meeting_count = (
+        db.query(sqlfunc.count(SpeakerCluster.meeting_id.distinct()))
+        .filter(SpeakerCluster.assigned_person_id == person.id)
+        .scalar()
+        or 0
+    )
+
     db.commit()
     return {"message": "Speaker assigned", "cluster_id": cluster.id}
 
