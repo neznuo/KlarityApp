@@ -3,375 +3,455 @@ import SwiftUI
 struct HomeView: View {
     @StateObject private var vm = HomeViewModel()
     @EnvironmentObject private var appState: AppState
-    @State private var showingRecording = false
+    @EnvironmentObject private var recordingVM: RecordingViewModel
+
     @State private var selectedMeetingId: String?
     @State private var depWarningDismissed = false
+
+    // Multi-select
+    @State private var selectionMode = false
+    @State private var selectedIds = Set<String>()
+    @State private var showDeleteConfirm = false
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                // Dependency warning banner — shown until dismissed or fixed
+                // Dependency warning
                 if !depWarningDismissed,
                    let deps = appState.dependencies,
                    !deps.allRequiredOk {
                     depWarningBanner(deps: deps)
                 }
 
-                topActionAndFilterBar
-                
-                Divider().foregroundStyle(AppTheme.Colors.border)
+                // Toolbar
+                toolbar
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(AppTheme.Colors.background)
 
-                if vm.isLoading {
-                    ProgressView().padding().frame(maxHeight: .infinity)
+                Divider().opacity(0.4)
+
+                // Content
+                if vm.isLoading && vm.meetings.isEmpty {
+                    Spacer()
+                    ProgressView().controlSize(.large)
+                    Spacer()
                 } else if vm.filteredMeetings.isEmpty {
                     emptyState
                 } else {
                     meetingList
                 }
             }
-            .navigationTitle("Meetings")
-            // Hide the default navigation bar so our custom top bar sits flush
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                ToolbarItem(placement: .navigation) {
-                    EmptyView()
-                }
-            }
             .background(AppTheme.Colors.background)
-            .sheet(isPresented: $showingRecording) {
-                RecordingView { meeting in
-                    vm.insertMeeting(meeting)
-                    selectedMeetingId = meeting.id
-                    showingRecording = false
-                    Task { await vm.load() }
-                }
-            }
             .navigationDestination(item: $selectedMeetingId) { id in
                 MeetingDetailView(meetingId: id)
             }
+            // Navigate to newly completed recording
+            .onChange(of: recordingVM.completedMeeting) { _, meeting in
+                guard let m = meeting else { return }
+                vm.insertMeeting(m)
+                selectedMeetingId = m.id
+                recordingVM.completedMeeting = nil
+                Task { await vm.load() }
+            }
+            .confirmationDialog(
+                "Delete \(selectedIds.count) meeting\(selectedIds.count == 1 ? "" : "s")?",
+                isPresented: $showDeleteConfirm,
+                titleVisibility: .visible
+            ) {
+                Button("Delete", role: .destructive) { Task { await bulkDelete() } }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This cannot be undone.")
+            }
+            // Load on the VStack level — more reliable than NavigationStack.task
+            // in a macOS NavigationSplitView detail pane.
+            .task { await vm.load() }
+            .onAppear { if vm.meetings.isEmpty { Task { await vm.load() } } }
         }
-        .task { await vm.load() }
     }
-    
-    // MARK: - Dependency Warning Banner
+
+    // MARK: - Toolbar
+
+    private var toolbar: some View {
+        HStack(spacing: 10) {
+            if selectionMode {
+                // Selection mode toolbar
+                Button("Done") {
+                    selectionMode = false
+                    selectedIds = []
+                }
+                .font(AppTheme.Fonts.listTitle)
+                .foregroundStyle(AppTheme.Colors.brandPrimary)
+
+                Spacer()
+
+                if !selectedIds.isEmpty {
+                    Button {
+                        showDeleteConfirm = true
+                    } label: {
+                        Label("Delete (\(selectedIds.count))", systemImage: "trash")
+                            .font(AppTheme.Fonts.caption)
+                            .foregroundStyle(AppTheme.Colors.accentRed)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(AppTheme.Colors.accentRed.opacity(0.1))
+                            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Metrics.cornerRadius))
+                    }
+                    .buttonStyle(.plain)
+                }
+            } else {
+                // Normal toolbar
+                HStack(spacing: 7) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(AppTheme.Colors.tertiaryText)
+                        .font(.system(size: 13))
+                    TextField("Search meetings…", text: $vm.searchText)
+                        .textFieldStyle(.plain)
+                        .font(AppTheme.Fonts.body)
+                    if !vm.searchText.isEmpty {
+                        Button { vm.searchText = "" } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(AppTheme.Colors.tertiaryText)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(AppTheme.Colors.inputBackground)
+                .clipShape(RoundedRectangle(cornerRadius: AppTheme.Metrics.cornerRadius))
+                .overlay(RoundedRectangle(cornerRadius: AppTheme.Metrics.cornerRadius)
+                    .stroke(AppTheme.Colors.border, lineWidth: 0.5))
+
+                Spacer()
+
+                if !vm.filteredMeetings.isEmpty {
+                    Button {
+                        selectionMode = true
+                    } label: {
+                        Text("Select")
+                            .font(AppTheme.Fonts.caption)
+                            .foregroundStyle(AppTheme.Colors.brandPrimary)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(AppTheme.Colors.brandLight)
+                            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Metrics.cornerRadius))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    // MARK: - Meeting List
+
+    private var meetingList: some View {
+        ScrollView {
+            LazyVStack(spacing: 1) {
+                ForEach(vm.filteredMeetings) { meeting in
+                    MeetingRowView(
+                        meeting: meeting,
+                        isSelected: selectedIds.contains(meeting.id),
+                        selectionMode: selectionMode
+                    ) {
+                        if selectionMode {
+                            if selectedIds.contains(meeting.id) {
+                                selectedIds.remove(meeting.id)
+                            } else {
+                                selectedIds.insert(meeting.id)
+                            }
+                        } else {
+                            selectedMeetingId = meeting.id
+                        }
+                    }
+                    .contextMenu {
+                        if !selectionMode {
+                            Button {
+                                selectionMode = true
+                                selectedIds = [meeting.id]
+                            } label: {
+                                Label("Select", systemImage: "checkmark.circle")
+                            }
+                        }
+                        if meeting.status == .failed {
+                            Button {
+                                Task { await vm.retryMeeting(meeting) }
+                            } label: {
+                                Label("Retry Transcription", systemImage: "arrow.clockwise")
+                            }
+                        }
+                        Divider()
+                        Button(role: .destructive) {
+                            Task { await vm.deleteMeeting(meeting) }
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+        }
+        .background(AppTheme.Colors.background)
+    }
+
+    // MARK: - Empty state
+
+    private var emptyState: some View {
+        VStack(spacing: 14) {
+            Spacer()
+            ZStack {
+                Circle().fill(AppTheme.Colors.brandLight).frame(width: 72, height: 72)
+                Image(systemName: "mic.fill").font(.system(size: 28)).foregroundStyle(AppTheme.Colors.brandPrimary)
+            }
+            Text(vm.searchText.isEmpty ? "No meetings yet" : "No results for \"\(vm.searchText)\"")
+                .font(AppTheme.Fonts.title).foregroundStyle(AppTheme.Colors.primaryText)
+            Text(vm.searchText.isEmpty
+                 ? "Use the \"New Recording\" button above to start capturing a meeting."
+                 : "Try a different search term.")
+                .font(AppTheme.Fonts.body).foregroundStyle(AppTheme.Colors.secondaryText)
+                .multilineTextAlignment(.center).frame(maxWidth: 320)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    // MARK: - Bulk delete
+
+    private func bulkDelete() async {
+        for id in selectedIds {
+            if let m = vm.meetings.first(where: { $0.id == id }) {
+                await vm.deleteMeeting(m)
+            }
+        }
+        selectedIds = []
+        selectionMode = false
+    }
+
+    // MARK: - Dependency warning
 
     private func depWarningBanner(deps: DependenciesResult) -> some View {
         let failing = deps.checks.filter { !$0.isOk && $0.required }
         return HStack(spacing: 10) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Setup incomplete — recording may not work")
-                    .font(AppTheme.Fonts.listTitle)
-                    .foregroundStyle(AppTheme.Colors.primaryText)
+                .foregroundStyle(AppTheme.Colors.accentOrange).font(.system(size: 13))
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Setup incomplete").font(AppTheme.Fonts.listTitle).foregroundStyle(AppTheme.Colors.primaryText)
                 Text(failing.map(\.name).joined(separator: ", ") + " not configured.")
-                    .font(AppTheme.Fonts.caption)
+                    .font(AppTheme.Fonts.caption).foregroundStyle(AppTheme.Colors.secondaryText)
+            }
+            Spacer()
+            Button("Open Settings") { NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) }
+                .font(AppTheme.Fonts.caption).buttonStyle(.bordered)
+            Button { depWarningDismissed = true } label: {
+                Image(systemName: "xmark").font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(AppTheme.Colors.secondaryText)
-            }
-            Spacer()
-            Button("Fix in Settings") {
-                // Navigate to Settings via the sidebar
-                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-            }
-            .font(AppTheme.Fonts.caption)
-            .buttonStyle(.bordered)
-
-            Button {
-                depWarningDismissed = true
-            } label: {
-                Image(systemName: "xmark")
-                    .font(AppTheme.Fonts.caption)
-                    .foregroundStyle(AppTheme.Colors.secondaryText)
-            }
-            .buttonStyle(.plain)
+            }.buttonStyle(.plain)
         }
-        .padding(.horizontal, AppTheme.Metrics.paddingStandard)
-        .padding(.vertical, 10)
-        .background(Color.orange.opacity(0.08))
-        .overlay(Rectangle().frame(height: 1).foregroundStyle(Color.orange.opacity(0.25)), alignment: .bottom)
-    }
-
-    // MARK: - Custom Top Navigation
-    
-    private var topActionAndFilterBar: some View {
-        VStack(spacing: AppTheme.Metrics.paddingSmall) {
-            // Action Bar
-            HStack(spacing: 12) {
-                // Search
-                HStack {
-                    Image(systemName: "magnifyingglass").foregroundStyle(AppTheme.Colors.secondaryText)
-                    TextField("Search for titles, notes, and participants", text: $vm.searchText)
-                        .textFieldStyle(.plain)
-                        .font(AppTheme.Fonts.listTitle)
-                    
-                    Text("⌘ + K")
-                        .font(AppTheme.Fonts.caption)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color(NSColor.windowBackgroundColor))
-                        .cornerRadius(4)
-                        .foregroundStyle(AppTheme.Colors.secondaryText)
-                }
-                .padding(8)
-                .background(Color(NSColor.controlBackgroundColor))
-                .clipShape(RoundedRectangle(cornerRadius: AppTheme.Metrics.cornerRadius))
-                .overlay(
-                    RoundedRectangle(cornerRadius: AppTheme.Metrics.cornerRadius)
-                        .stroke(AppTheme.Colors.border, lineWidth: 1)
-                )
-                
-                Spacer()
-                
-                // Top Right Buttons
-                HStack(spacing: 8) {
-                    Button(action: { showingRecording = true }) {
-                        HStack {
-                            Image(systemName: "record.circle")
-                            Text("Record")
-                        }
-                        .font(AppTheme.Fonts.listTitle)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .background(Color(NSColor.controlBackgroundColor))
-                    .cornerRadius(AppTheme.Metrics.cornerRadius)
-                    .overlay(RoundedRectangle(cornerRadius: AppTheme.Metrics.cornerRadius).stroke(AppTheme.Colors.border, lineWidth: 1))
-                }
-            }
-            .padding(.horizontal, AppTheme.Metrics.paddingStandard)
-            
-            // Filter Pill Row
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    filterPill(icon: "calendar", title: "Date")
-                    filterPill(icon: "a.magnify", title: "Contains")
-                    filterPill(icon: "person.crop.circle", title: "Owner")
-                    filterPill(icon: "building.2", title: "Company")
-                    filterPill(icon: "folder", title: "Type")
-                    filterPill(icon: "tag", title: "Tags")
-                    
-                    Spacer()
-                    
-                    HStack(spacing: 4) {
-                        Text("Sort by date")
-                            .font(AppTheme.Fonts.listTitle)
-                        Image(systemName: "chevron.down")
-                            .font(AppTheme.Fonts.caption)
-                    }
-                    .padding(.leading, 12)
-                }
-                .padding(.horizontal, AppTheme.Metrics.paddingStandard)
-                .padding(.bottom, 8)
-            }
-        }
-        .padding(.top, 12)
-    }
-    
-    private func topActionButton(icon: String, title: String, color: Color) -> some View {
-        Button(action: {}) {
-            HStack(spacing: 6) {
-                Image(systemName: icon)
-                Text(title)
-            }
-            .font(AppTheme.Fonts.listTitle)
-            .foregroundColor(color)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(Color(NSColor.controlBackgroundColor))
-            .cornerRadius(AppTheme.Metrics.cornerRadius)
-            .overlay(RoundedRectangle(cornerRadius: AppTheme.Metrics.cornerRadius).stroke(AppTheme.Colors.border, lineWidth: 1))
-        }
-        .buttonStyle(.plain)
-    }
-    
-    private func filterPill(icon: String, title: String) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: icon).font(.caption)
-            Text(title)
-        }
-        .font(AppTheme.Fonts.listTitle)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(Color(NSColor.controlBackgroundColor))
-        .cornerRadius(20)
-        .overlay(RoundedRectangle(cornerRadius: 20).stroke(AppTheme.Colors.border, lineWidth: 1))
-    }
-
-    // MARK: - Data Table
-    
-    private var meetingList: some View {
-        List(selection: $selectedMeetingId) {
-            ForEach(vm.filteredMeetings) { meeting in
-                NavigationLink(value: meeting.id) {
-                    MeetingRowView(meeting: meeting)
-                }
-                .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
-                .listRowSeparator(.visible)
-                .listRowBackground(Color.clear)
-                // Remove the default NavigationLink chevron styling for a cleaner table look
-                .buttonStyle(.plain) 
-                .contextMenu {
-                    if meeting.status == .failed {
-                        Button { Task { await vm.retryMeeting(meeting) } } label: {
-                            Label("Retry Transcription", systemImage: "arrow.clockwise")
-                        }
-                    }
-                    Button(role: .destructive) { Task { await vm.deleteMeeting(meeting) } } label: {
-                        Label("Delete", systemImage: "trash")
-                    }
-                }
-            }
-        }
-        .listStyle(.plain)
-        .refreshable { await vm.load() }
-    }
-
-    private var emptyState: some View {
-        VStack(spacing: 16) {
-            Spacer()
-            Image(systemName: "waveform.circle")
-                .font(.system(size: 64))
-                .foregroundStyle(.tertiary)
-            Text("No Meetings Yet")
-                .font(.title2.bold())
-            Text("Click \"Record\" to start capturing your first meeting.")
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-            Spacer()
-        }
+        .padding(.horizontal, 16).padding(.vertical, 10)
+        .background(AppTheme.Colors.accentOrange.opacity(0.07))
+        .overlay(Rectangle().frame(height: 1).foregroundStyle(AppTheme.Colors.accentOrange.opacity(0.2)), alignment: .bottom)
     }
 }
 
-// MARK: - Dense Row Layout
+// MARK: - Meeting Row
+
 struct MeetingRowView: View {
     let meeting: Meeting
+    let isSelected: Bool
+    let selectionMode: Bool
+    let onTap: () -> Void
+
+    @State private var isHovered = false
 
     var body: some View {
-        HStack(spacing: 12) {
-            // Checkbox & Star
-            Image(systemName: "square")
-                .foregroundStyle(AppTheme.Colors.secondaryText)
-            Image(systemName: "star")
-                .foregroundStyle(AppTheme.Colors.secondaryText)
-            
-            // Audio Icon
-            Image(systemName: "speaker.wave.2")
-                .foregroundStyle(AppTheme.Colors.secondaryText)
-                .frame(width: 20)
-            
-            // Title & Duration
-            HStack(spacing: 4) {
-                Text(meeting.title)
-                    .font(AppTheme.Fonts.listTitle)
-                    .foregroundColor(AppTheme.Colors.primaryText)
-                    .lineLimit(1)
-                
-                Text(formatDuration(Int(meeting.durationSeconds ?? 0)))
-                    .font(AppTheme.Fonts.caption)
-                    .foregroundColor(AppTheme.Colors.secondaryText)
-            }
-            
-            Spacer(minLength: 24)
-            
-            // Avatar Stack (Simulated for Krisp look)
-            HStack(spacing: -8) {
-                Circle().fill(Color.gray.opacity(0.3)).frame(width: 24, height: 24)
-                Circle().fill(Color.blue.opacity(0.5)).frame(width: 24, height: 24)
-                Text("+2")
-                    .font(.system(size: 10, weight: .bold))
-                    .frame(width: 24, height: 24)
-                    .background(Color(NSColor.windowBackgroundColor))
-                    .clipShape(Circle())
-                    .overlay(Circle().stroke(Color.white, lineWidth: 1))
-            }
-            
-            Spacer().frame(width: 48)
-            
-            // End Icons
-            Image(systemName: "lock")
-                .foregroundStyle(AppTheme.Colors.secondaryText)
-            
-            Text(" R ")
-                .font(AppTheme.Fonts.smallMono)
-                .padding(2)
-                .background(Color.gray.opacity(0.2))
-                .cornerRadius(4)
-                .foregroundColor(AppTheme.Colors.secondaryText)
-            
-            // Status badge
-            statusBadge
+        Button(action: onTap) {
+            HStack(spacing: 12) {
+                // Selection checkbox or icon
+                if selectionMode {
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 18))
+                        .foregroundStyle(isSelected ? AppTheme.Colors.brandPrimary : AppTheme.Colors.tertiaryText)
+                        .animation(.easeInOut(duration: 0.15), value: isSelected)
+                } else {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 9)
+                            .fill(iconBg)
+                            .frame(width: 36, height: 36)
+                        Image(systemName: iconName)
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(iconFg)
+                    }
+                }
 
-            // Date
-            Text(formatDate(meeting.createdAt))
-                .font(AppTheme.Fonts.listTitle)
-                .foregroundColor(AppTheme.Colors.secondaryText)
-                .frame(width: 80, alignment: .trailing)
+                // Title + metadata
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(meeting.title)
+                        .font(AppTheme.Fonts.listTitle)
+                        .foregroundStyle(AppTheme.Colors.primaryText)
+                        .lineLimit(1)
+
+                    HStack(spacing: 5) {
+                        Text(relativeDate(meeting.createdAt))
+                        if let dur = meeting.durationSeconds, dur > 0 {
+                            Text("·")
+                            Text(formatDuration(Int(dur)))
+                        }
+                    }
+                    .font(AppTheme.Fonts.caption)
+                    .foregroundStyle(AppTheme.Colors.secondaryText)
+                }
+
+                Spacer(minLength: 8)
+
+                // People avatars
+                if !meeting.speakersPreview.isEmpty {
+                    peopleAvatars
+                }
+
+                // Status pill
+                statusView
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 9)
+            .background(
+                RoundedRectangle(cornerRadius: AppTheme.Metrics.cornerRadius)
+                    .fill(isSelected
+                          ? AppTheme.Colors.brandLight
+                          : (isHovered ? AppTheme.Colors.hoverFill : Color.clear))
+            )
+            .contentShape(Rectangle())
         }
-        .padding(.vertical, 10)
-        .contentShape(Rectangle()) // Makes the whole row clickable
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .animation(.easeInOut(duration: 0.12), value: isHovered)
     }
 
+    // MARK: People avatars
+
+    private var peopleAvatars: some View {
+        let names = Array(meeting.speakersPreview.prefix(3))
+        let extra = meeting.speakersPreview.count - names.count
+        return HStack(spacing: -6) {
+            ForEach(Array(names.enumerated()), id: \.offset) { idx, name in
+                ZStack {
+                    Circle()
+                        .fill(avatarColor(for: name))
+                        .frame(width: 22, height: 22)
+                        .overlay(Circle().stroke(AppTheme.Colors.background, lineWidth: 1.5))
+                    Text(initials(for: name))
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+                .zIndex(Double(names.count - idx))
+            }
+            if extra > 0 {
+                ZStack {
+                    Circle()
+                        .fill(AppTheme.Colors.inputBackground)
+                        .frame(width: 22, height: 22)
+                        .overlay(Circle().stroke(AppTheme.Colors.background, lineWidth: 1.5))
+                    Text("+\(extra)")
+                        .font(.system(size: 7, weight: .semibold))
+                        .foregroundStyle(AppTheme.Colors.secondaryText)
+                }
+            }
+        }
+    }
+
+    // MARK: Status
+
     @ViewBuilder
-    private var statusBadge: some View {
+    private var statusView: some View {
         switch meeting.status {
         case .preprocessing, .transcribing, .matchingSpeakers:
-            HStack(spacing: 4) {
-                ProgressView().scaleEffect(0.5).frame(width: 12, height: 12)
-                Text(meeting.status.displayName)
-                    .font(AppTheme.Fonts.smallMono)
-                    .foregroundColor(AppTheme.Colors.brandPrimary)
-            }
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(AppTheme.Colors.brandPrimary.opacity(0.08))
-            .cornerRadius(4)
+            activePill(label: meeting.status.displayName, color: AppTheme.Colors.brandPrimary)
         case .summarizing:
-            HStack(spacing: 4) {
-                ProgressView().scaleEffect(0.5).frame(width: 12, height: 12)
-                Text("Summarizing")
-                    .font(AppTheme.Fonts.smallMono)
-                    .foregroundColor(AppTheme.Colors.accentOrange)
-            }
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(AppTheme.Colors.accentOrange.opacity(0.08))
-            .cornerRadius(4)
-        case .failed:
-            Text("Failed")
-                .font(AppTheme.Fonts.smallMono)
-                .foregroundColor(AppTheme.Colors.accentRed)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(AppTheme.Colors.accentRed.opacity(0.08))
-                .cornerRadius(4)
+            activePill(label: "Summarizing", color: AppTheme.Colors.accentOrange)
+        case .transcriptReady:
+            staticPill(label: "Transcript ready", color: AppTheme.Colors.brandPrimary)
         case .complete:
-            Text("Done")
-                .font(AppTheme.Fonts.smallMono)
-                .foregroundColor(AppTheme.Colors.accentGreen)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(AppTheme.Colors.accentGreen.opacity(0.08))
-                .cornerRadius(4)
+            staticPill(label: "Complete", color: AppTheme.Colors.accentGreen)
+        case .failed:
+            staticPill(label: "Failed", color: AppTheme.Colors.accentRed)
         default:
             EmptyView()
         }
     }
 
-    private func formatDuration(_ seconds: Int) -> String {
-        if seconds == 0 { return "0m" }
-        let h = seconds / 3600
-        let m = (seconds % 3600) / 60
-        if h > 0 { return "\(h)h \(m)m" }
-        return "\(m)m"
+    private func activePill(label: String, color: Color) -> some View {
+        HStack(spacing: 5) {
+            ProgressView().scaleEffect(0.55).frame(width: 10, height: 10)
+            Text(label).font(AppTheme.Fonts.caption).foregroundStyle(color)
+        }
+        .padding(.horizontal, 8).padding(.vertical, 4)
+        .background(color.opacity(0.10)).clipShape(Capsule())
     }
 
-    private func formatDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "MMM d" // e.g., "Jan 6"
-        return formatter.string(from: date)
+    private func staticPill(label: String, color: Color) -> some View {
+        Text(label).font(AppTheme.Fonts.caption).foregroundStyle(color)
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(color.opacity(0.10)).clipShape(Capsule())
+    }
+
+    // MARK: Helpers
+
+    private var iconName: String {
+        switch meeting.status {
+        case .failed: return "exclamationmark.triangle"
+        case .complete: return "checkmark.circle.fill"
+        default: return "mic.fill"
+        }
+    }
+    private var iconBg: Color {
+        switch meeting.status {
+        case .failed: return AppTheme.Colors.accentRed.opacity(0.10)
+        case .complete: return AppTheme.Colors.accentGreen.opacity(0.10)
+        default: return AppTheme.Colors.brandLight
+        }
+    }
+    private var iconFg: Color {
+        switch meeting.status {
+        case .failed: return AppTheme.Colors.accentRed
+        case .complete: return AppTheme.Colors.accentGreen
+        default: return AppTheme.Colors.brandPrimary
+        }
+    }
+
+    private func relativeDate(_ date: Date) -> String {
+        let cal = Calendar.current
+        if cal.isDateInToday(date) {
+            let f = DateFormatter(); f.dateFormat = "h:mm a"; return "Today, \(f.string(from: date))"
+        }
+        if cal.isDateInYesterday(date) {
+            let f = DateFormatter(); f.dateFormat = "h:mm a"; return "Yesterday, \(f.string(from: date))"
+        }
+        let f = DateFormatter()
+        f.dateFormat = cal.component(.year, from: date) == cal.component(.year, from: Date()) ? "MMM d" : "MMM d, yyyy"
+        return f.string(from: date)
+    }
+
+    private func formatDuration(_ seconds: Int) -> String {
+        guard seconds > 0 else { return "" }
+        let h = seconds / 3600; let m = (seconds % 3600) / 60; let s = seconds % 60
+        if h > 0 { return "\(h)h \(m)m" }
+        if m > 0 { return "\(m)m \(s > 0 ? "\(s)s" : "")" }
+        return "\(s)s"
+    }
+
+    private func initials(for name: String) -> String {
+        let parts = name.split(separator: " ")
+        if parts.count >= 2 { return String(parts[0].prefix(1) + parts[1].prefix(1)).uppercased() }
+        return String(name.prefix(1)).uppercased()
+    }
+
+    private func avatarColor(for name: String) -> Color {
+        let colors: [Color] = [.indigo, .teal,
+            Color(red: 0.85, green: 0.35, blue: 0.25),
+            Color(red: 0.25, green: 0.65, blue: 0.55),
+            .purple,
+            Color(red: 0.70, green: 0.45, blue: 0.10)]
+        return colors[abs(name.hashValue) % colors.count]
     }
 }

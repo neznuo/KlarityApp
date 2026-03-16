@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AA001122334455667788AABB /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = BB001122334455667788AABB /* Assets.xcassets */; };
 		0C285D719C56C1678D0E89F0 /* BackendProcessManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCE9450AD3F25B91E869969B /* BackendProcessManager.swift */; };
 		11899CFC8D58E4397765BC23 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA7DAD76EF7DD3DD43CA2A98 /* HomeView.swift */; };
 		11A8CA6EEBBA39B069EC071D /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DBA6CC50E26967DDDAFA002 /* KeychainService.swift */; };
@@ -23,11 +24,20 @@
 		944619DD990D61F08F346383 /* ViewModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34DAC82F4A07DC5B5C9A3546 /* ViewModels.swift */; };
 		BCE72884D9DF2A4747F1ABEB /* PeopleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 693B45FE31FF2C74BE1E5367 /* PeopleView.swift */; };
 		C9E65B07986A87A5BBB136B4 /* MeetingDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 154336215B45C3E98F7BCBBE /* MeetingDetailView.swift */; };
+		A1B2C3D4E5F6A7B8C9D0E1F2 /* MarkdownContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2C3D4E5F6A7B8C9D0E1F2A3 /* MarkdownContentView.swift */; };
+		C3D4E5F6A7B8C9D0E1F2A3B4 /* SelectableMeetingNotesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4E5F6A7B8C9D0E1F2A3B4C5 /* SelectableMeetingNotesView.swift */; };
+		E5F6A7B8C9D0E1F2A3B4C5D6 /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6A7B8C9D0E1F2A3B4C5D6E7 /* MenuBarView.swift */; };
+		F1E2D3C4B5A697886950A001 /* CalendarService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1D2C3B4A596877869504001 /* CalendarService.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		BB001122334455667788AABB /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		0916DF495276ED78316C1240 /* RecordingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingView.swift; sourceTree = "<group>"; };
 		154336215B45C3E98F7BCBBE /* MeetingDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetingDetailView.swift; sourceTree = "<group>"; };
+		B2C3D4E5F6A7B8C9D0E1F2A3 /* MarkdownContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownContentView.swift; sourceTree = "<group>"; };
+		D4E5F6A7B8C9D0E1F2A3B4C5 /* SelectableMeetingNotesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectableMeetingNotesView.swift; sourceTree = "<group>"; };
+		F6A7B8C9D0E1F2A3B4C5D6E7 /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
+		E1D2C3B4A596877869504001 /* CalendarService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarService.swift; sourceTree = "<group>"; };
 		2260F73EBD122FDB72D49F95 /* AppTerminationHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppTerminationHandler.swift; sourceTree = "<group>"; };
 		34DAC82F4A07DC5B5C9A3546 /* ViewModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewModels.swift; sourceTree = "<group>"; };
 		386EA252A7F092D0BD83A0F7 /* KlarityApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = KlarityApp.entitlements; sourceTree = "<group>"; };
@@ -64,6 +74,8 @@
 			isa = PBXGroup;
 			children = (
 				154336215B45C3E98F7BCBBE /* MeetingDetailView.swift */,
+				B2C3D4E5F6A7B8C9D0E1F2A3 /* MarkdownContentView.swift */,
+				D4E5F6A7B8C9D0E1F2A3B4C5 /* SelectableMeetingNotesView.swift */,
 			);
 			path = MeetingDetail;
 			sourceTree = "<group>";
@@ -95,6 +107,7 @@
 		6AA957225990155F657D27A2 /* PersonalAIMeetingAssistant */ = {
 			isa = PBXGroup;
 			children = (
+				BB001122334455667788AABB /* Assets.xcassets */,
 				197C13CC786B284689854F45 /* App */,
 				7DA6E4B3C1DE1A4014D1DF4E /* Features */,
 				2A7432114817B1BDFCC5BF0A /* Models */,
@@ -117,6 +130,7 @@
 			isa = PBXGroup;
 			children = (
 				4B53D2D8CE73A23CC54E1DE6 /* Home */,
+				A8B9C0D1E2F3A4B5C6D7E8F9 /* MenuBar */,
 				22C410C77F70FF58529017D5 /* MeetingDetail */,
 				5CBA02661DCD7D32EFD06CB8 /* People */,
 				DE0BD3F53D2051EADC3DD2B1 /* Recording */,
@@ -124,6 +138,14 @@
 				FB2DEACAEBB424D9CEA7770C /* Transcript */,
 			);
 			path = Features;
+			sourceTree = "<group>";
+		};
+		A8B9C0D1E2F3A4B5C6D7E8F9 /* MenuBar */ = {
+			isa = PBXGroup;
+			children = (
+				F6A7B8C9D0E1F2A3B4C5D6E7 /* MenuBarView.swift */,
+			);
+			path = MenuBar;
 			sourceTree = "<group>";
 		};
 		A76748051D5C0D4294642DE8 /* Theme */ = {
@@ -180,6 +202,7 @@
 				B048DC8530A0E0015006EE49 /* APIClient.swift */,
 				B21284A2653E2777A4D408C0 /* AudioRecorder.swift */,
 				DCE9450AD3F25B91E869969B /* BackendProcessManager.swift */,
+				E1D2C3B4A596877869504001 /* CalendarService.swift */,
 				7DBA6CC50E26967DDDAFA002 /* KeychainService.swift */,
 			);
 			path = Services;
@@ -193,6 +216,7 @@
 			buildConfigurationList = 6CD42E9E3E0FF33B14E44844 /* Build configuration list for PBXNativeTarget "KlarityApp" */;
 			buildPhases = (
 				73C6D5F1B4E63F1F6DA3F5E1 /* Bundle Python Backend */,
+				CC001122334455667788AABB /* Resources */,
 				92A874FE269A05E71370A23D /* Sources */,
 			);
 			buildRules = (
@@ -238,6 +262,17 @@
 		};
 /* End PBXProject section */
 
+/* Begin PBXResourcesBuildPhase section */
+		CC001122334455667788AABB /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA001122334455667788AABB /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
 /* Begin PBXShellScriptBuildPhase section */
 		73C6D5F1B4E63F1F6DA3F5E1 /* Bundle Python Backend */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -268,6 +303,7 @@
 			files = (
 				6E5550BB0F674149C92E45FF /* APIClient.swift in Sources */,
 				7BCB007A91D5DBD7C33CE8C2 /* AppTerminationHandler.swift in Sources */,
+				F1E2D3C4B5A697886950A001 /* CalendarService.swift in Sources */,
 				87913C66E9EF51E44126F03F /* AudioPlayerView.swift in Sources */,
 				7886CD1867401D6C3F9375CC /* AudioRecorder.swift in Sources */,
 				0C285D719C56C1678D0E89F0 /* BackendProcessManager.swift in Sources */,
@@ -275,6 +311,9 @@
 				11899CFC8D58E4397765BC23 /* HomeView.swift in Sources */,
 				11A8CA6EEBBA39B069EC071D /* KeychainService.swift in Sources */,
 				38382AC7C6ACD01CB3ADA808 /* KlarityApp.swift in Sources */,
+				A1B2C3D4E5F6A7B8C9D0E1F2 /* MarkdownContentView.swift in Sources */,
+				C3D4E5F6A7B8C9D0E1F2A3B4 /* SelectableMeetingNotesView.swift in Sources */,
+				E5F6A7B8C9D0E1F2A3B4C5D6 /* MenuBarView.swift in Sources */,
 				C9E65B07986A87A5BBB136B4 /* MeetingDetailView.swift in Sources */,
 				81F7A73700626A8109757E25 /* Models.swift in Sources */,
 				BCE72884D9DF2A4747F1ABEB /* PeopleView.swift in Sources */,

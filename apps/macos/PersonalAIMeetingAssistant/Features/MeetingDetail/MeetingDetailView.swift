@@ -19,16 +19,15 @@ struct MeetingDetailView: View {
             Divider().foregroundStyle(AppTheme.Colors.border)
             
             // ── Tab Navigation ────────────────────────────────────────────────
-            HStack(spacing: 24) {
+            HStack(alignment: .bottom, spacing: 0) {
                 tabButton(title: "Notes", tab: .summary)
-                tabButton(title: "Recording & Transcript", tab: .transcript)
+                tabButton(title: "Transcript", tab: .transcript)
                 Spacer()
             }
-            .padding(.horizontal, AppTheme.Metrics.paddingStandard)
-            .padding(.top, 12)
+            .padding(.horizontal, 20)
             .background(AppTheme.Colors.background)
-            
-            Divider().foregroundStyle(AppTheme.Colors.border)
+
+            Divider().opacity(0.4)
 
             // ── Tab Content ───────────────────────────────────────────────
             ZStack {
@@ -74,7 +73,7 @@ struct MeetingDetailView: View {
             )
             .padding(.horizontal)
             .padding(.vertical, 8)
-            .background(Color(NSColor.controlBackgroundColor))
+            .background(AppTheme.Colors.cardBackground)
         }
         .navigationTitle("")
         #if os(iOS)
@@ -96,78 +95,100 @@ struct MeetingDetailView: View {
     // MARK: - Subcomponents
     
     private var customTopBar: some View {
-        HStack {
-            // Breadcrumb
-            HStack(spacing: 8) {
-                Text(vm.meeting?.createdAt.formatted(date: .omitted, time: .shortened) ?? "Time")
-                    .foregroundColor(AppTheme.Colors.secondaryText)
-                Text("-")
-                    .foregroundColor(AppTheme.Colors.border)
-                Text(vm.meeting?.title ?? "Loading...")
-                    .font(AppTheme.Fonts.listTitle)
-                    .foregroundColor(AppTheme.Colors.primaryText)
-                
-                if vm.meeting?.status.isProcessing == true {
-                    ProgressView().scaleEffect(0.5).frame(width: 16, height: 16)
+        HStack(spacing: 16) {
+            // Left: title + metadata
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text(vm.meeting?.title ?? "Loading…")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(AppTheme.Colors.primaryText)
+                        .lineLimit(1)
+                    if vm.meeting?.status.needsPolling == true {
+                        ProgressView().scaleEffect(0.55).frame(width: 14, height: 14)
+                    }
+                }
+
+                if let m = vm.meeting {
+                    HStack(spacing: 5) {
+                        Text(m.createdAt.formatted(date: .abbreviated, time: .shortened))
+                        if let dur = m.durationSeconds, dur > 0 {
+                            Text("·")
+                            Text(durationString(Int(dur)))
+                        }
+                        Text("·")
+                        Text(m.status.displayName)
+                            .foregroundStyle(statusColor(m.status))
+                    }
+                    .font(AppTheme.Fonts.caption)
+                    .foregroundStyle(AppTheme.Colors.secondaryText)
                 }
             }
-            .font(AppTheme.Fonts.listTitle)
-            
+
             Spacer()
-            
-            // Action Buttons
-            HStack(spacing: 12) {
-                actionButton(icon: "sparkles", title: "Summarize", color: AppTheme.Colors.brandPrimary) {
-                    if selectedTab != .summary { selectedTab = .summary }
-                    Task { await vm.generateSummary() }
+
+            // Right: summarize CTA
+            Button {
+                if selectedTab != .summary { selectedTab = .summary }
+                Task { await vm.generateSummary() }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "sparkles").font(.system(size: 11, weight: .semibold))
+                    Text(vm.summary == nil ? "Summarize" : "Re-summarize").font(AppTheme.Fonts.listTitle)
                 }
-                
-                actionButton(icon: "square.and.arrow.up", title: "Share", color: AppTheme.Colors.secondaryText) {}
-                actionButton(icon: "clock.arrow.circlepath", title: "History", color: AppTheme.Colors.secondaryText) {}
-                
-                Button(action: {}) {
-                    Image(systemName: "ellipsis")
-                        .foregroundColor(AppTheme.Colors.secondaryText)
-                }
-                .buttonStyle(.plain)
+                .foregroundStyle(.white)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+                .background(vm.isSummarizing
+                    ? AppTheme.Colors.brandPrimary.opacity(0.5)
+                    : AppTheme.Colors.brandPrimary)
+                .clipShape(RoundedRectangle(cornerRadius: AppTheme.Metrics.cornerRadius))
             }
+            .buttonStyle(.plain)
+            .disabled(vm.isSummarizing)
         }
-        .padding(.horizontal, AppTheme.Metrics.paddingStandard)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
         .background(AppTheme.Colors.background)
     }
-    
-    private func actionButton(icon: String, title: String, color: Color, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 6) {
-                Image(systemName: icon)
-                Text(title)
-            }
-            .font(AppTheme.Fonts.caption)
-            .foregroundColor(color)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(Color(NSColor.controlBackgroundColor))
-            .cornerRadius(AppTheme.Metrics.cornerRadius)
-            .overlay(RoundedRectangle(cornerRadius: AppTheme.Metrics.cornerRadius).stroke(AppTheme.Colors.border, lineWidth: 1))
-        }
-        .buttonStyle(.plain)
+
+    private func durationString(_ seconds: Int) -> String {
+        guard seconds > 0 else { return "" }
+        let h = seconds / 3600; let m = (seconds % 3600) / 60; let s = seconds % 60
+        if h > 0 { return "\(h)h \(m)m" }
+        if m > 0 { return "\(m)m \(s > 0 ? "\(s)s" : "")" }
+        return "\(s)s"
     }
-    
+
+    private func statusColor(_ status: MeetingStatus) -> Color {
+        switch status {
+        case .complete:         return AppTheme.Colors.accentGreen
+        case .failed:           return AppTheme.Colors.accentRed
+        case .transcriptReady:  return AppTheme.Colors.brandPrimary
+        default:                return AppTheme.Colors.secondaryText
+        }
+    }
+
     private func tabButton(title: String, tab: Tab) -> some View {
-        Button(action: { selectedTab = tab }) {
-            VStack(spacing: 8) {
+        Button { selectedTab = tab } label: {
+            VStack(spacing: 0) {
                 Text(title)
                     .font(AppTheme.Fonts.listTitle)
-                    .foregroundColor(selectedTab == tab ? AppTheme.Colors.primaryText : AppTheme.Colors.secondaryText)
-                
-                // Underline indicator
+                    .foregroundStyle(selectedTab == tab
+                        ? AppTheme.Colors.brandPrimary
+                        : AppTheme.Colors.secondaryText)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+
+                // Active underline
                 Rectangle()
-                    .fill(selectedTab == tab ? AppTheme.Colors.primaryText : Color.clear)
+                    .fill(selectedTab == tab ? AppTheme.Colors.brandPrimary : Color.clear)
                     .frame(height: 2)
+                    .clipShape(Capsule())
             }
+            .contentShape(Rectangle())   // makes the full padded area hit-testable
         }
         .buttonStyle(.plain)
+        .animation(.easeInOut(duration: 0.15), value: selectedTab)
     }
 }
 
@@ -180,51 +201,102 @@ struct SummaryView: View {
     let onGenerate: () -> Void
 
     var body: some View {
-        if isSummarizing {
-            VStack {
-                ProgressView("Generating summary…").padding()
-                Text("This may take a minute depending on your model.")
-                    .foregroundStyle(.secondary).font(.caption)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if let summary {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    if let md = summary.summaryMarkdown {
-                        Text(.init(md))
-                            .font(AppTheme.Fonts.body)
-                            .lineSpacing(4)
-                    } else {
-                        Text("No summary markdown generated.")
+        if let summary {
+            // Summary exists — show it, with a regenerating banner overlaid when running
+            VStack(spacing: 0) {
+                if isSummarizing {
+                    HStack(spacing: 8) {
+                        ProgressView().scaleEffect(0.65)
+                        Text("Regenerating summary…")
+                            .font(AppTheme.Fonts.caption)
                             .foregroundStyle(.secondary)
+                        Spacer()
+                        Text("This may take a minute.")
+                            .font(AppTheme.Fonts.caption)
+                            .foregroundStyle(.tertiary)
                     }
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 8)
+                    .background(Color.orange.opacity(0.07))
+                    .overlay(Rectangle().frame(height: 1).foregroundStyle(Color.orange.opacity(0.2)), alignment: .bottom)
+                }
 
-                    if !tasks.isEmpty {
-                        Divider()
-                        Text("Action Items")
-                            .font(AppTheme.Fonts.header)
-                            .padding(.top, 8)
-                        ForEach(tasks) { task in
-                            HStack(alignment: .top, spacing: 12) {
-                                Image(systemName: task.status.lowercased() == "completed" ? "checkmark.circle.fill" : "circle")
-                                    .foregroundStyle(task.status.lowercased() == "completed" ? .green : .secondary)
-                                    .font(.title3)
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(task.description).font(AppTheme.Fonts.body)
-                                    if let w = task.rawOwnerText, !w.isEmpty {
-                                        Text("Assignee: \(w)")
-                                            .font(AppTheme.Fonts.caption)
-                                            .foregroundStyle(.secondary)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 24) {
+                        // Header row with regenerate button
+                        HStack {
+                            Text("Summary")
+                                .font(AppTheme.Fonts.caption)
+                                .foregroundStyle(AppTheme.Colors.tertiaryText)
+                                .textCase(.uppercase)
+                                .kerning(0.5)
+                            Spacer()
+                            if !isSummarizing {
+                                Button {
+                                    onGenerate()
+                                } label: {
+                                    HStack(spacing: 5) {
+                                        Image(systemName: "arrow.clockwise").font(.system(size: 10))
+                                        Text("Regenerate").font(AppTheme.Fonts.caption)
+                                    }
+                                    .foregroundStyle(AppTheme.Colors.brandPrimary)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 5)
+                                    .background(AppTheme.Colors.brandLight)
+                                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                                }
+                                .buttonStyle(.plain)
+                                .help("Re-run summarization with the currently configured LLM provider")
+                            }
+                        }
+
+                        if let md = summary.summaryMarkdown, !md.isEmpty {
+                            MarkdownContentView(markdown: md)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .opacity(isSummarizing ? 0.4 : 1)
+                        } else {
+                            Text("No summary markdown generated.")
+                                .foregroundStyle(.secondary)
+                        }
+
+                        if !tasks.isEmpty {
+                            Divider()
+                            Text("Action Items")
+                                .font(AppTheme.Fonts.header)
+                                .padding(.top, 8)
+                            ForEach(tasks) { task in
+                                HStack(alignment: .top, spacing: 12) {
+                                    Image(systemName: task.status.lowercased() == "completed" ? "checkmark.circle.fill" : "circle")
+                                        .foregroundStyle(task.status.lowercased() == "completed" ? .green : .secondary)
+                                        .font(.title3)
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(task.description).font(AppTheme.Fonts.body)
+                                        if let w = task.rawOwnerText, !w.isEmpty {
+                                            Text("Assignee: \(w)")
+                                                .font(AppTheme.Fonts.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
                                     }
                                 }
+                                .opacity(isSummarizing ? 0.4 : 1)
+                                .padding(.vertical, 4)
                             }
-                            .padding(.vertical, 4)
                         }
                     }
+                    .padding(24)
                 }
-                .padding(24)
             }
+        } else if isSummarizing {
+            // No existing summary yet — show full-screen spinner
+            VStack(spacing: 12) {
+                ProgressView("Generating summary…").padding()
+                Text("This may take a minute depending on your model.")
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
+            // No summary, not generating
             VStack(spacing: 16) {
                 Image(systemName: "doc.text.magnifyingglass")
                     .font(.system(size: 48))

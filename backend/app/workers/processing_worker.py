@@ -100,6 +100,26 @@ def run_processing_pipeline(meeting_id: str) -> None:
             norm_path = normalized_audio_path(meeting_id)
             preprocessor.preprocess(audio_src, norm_path)
             meeting.normalized_audio_path = str(norm_path)
+
+            # Extract actual duration from the processed audio file (authoritative source).
+            # This fills in duration_seconds even if the iOS/Mac client didn't send it.
+            if not meeting.duration_seconds:
+                from app.services.audio.preprocessor import find_tool_or_none
+                import subprocess as _sp, json as _json
+                ffprobe = find_tool_or_none("ffprobe")
+                if ffprobe:
+                    probe = _sp.run(
+                        [ffprobe, "-v", "error", "-show_entries", "format=duration",
+                         "-of", "json", str(norm_path)],
+                        capture_output=True, text=True,
+                    )
+                    if probe.returncode == 0:
+                        try:
+                            dur = float(_json.loads(probe.stdout)["format"]["duration"])
+                            meeting.duration_seconds = round(dur, 1)
+                        except (KeyError, ValueError):
+                            pass
+
             db.commit()
             _finish_job(job, db)
         except Exception as exc:
@@ -179,10 +199,71 @@ def run_processing_pipeline(meeting_id: str) -> None:
         db.close()
 
 
+def _extract_cluster_audio(
+    norm_path: Path,
+    segments: list,
+    cluster_id: str,
+) -> "Path | None":
+    """
+    Extract and concatenate the audio windows belonging to a single speaker cluster.
+    Uses FFmpeg to cut each segment by timestamp, then concatenates them.
+    Returns a temp WAV path (caller is responsible for cleanup) or None on failure.
+    """
+    import subprocess
+    import tempfile
+    from app.services.audio.preprocessor import find_tool_or_none
+
+    ffmpeg = find_tool_or_none("ffmpeg")
+    if not ffmpeg or not segments:
+        return None
+
+    # Only keep segments long enough to yield a useful embedding (≥ 0.5 s)
+    valid = [s for s in segments if (s.end_ms - s.start_ms) >= 500]
+    if not valid:
+        return None
+
+    tmp = Path(tempfile.mkdtemp(prefix="klarity_emb_"))
+    seg_paths: list[Path] = []
+
+    for i, seg in enumerate(valid[:25]):          # cap at 25 segments for speed
+        start_s  = seg.start_ms / 1000.0
+        dur_s    = max((seg.end_ms - seg.start_ms) / 1000.0, 0.1)
+        out_path = tmp / f"s{i}.wav"
+        r = subprocess.run(
+            [ffmpeg, "-y", "-i", str(norm_path),
+             "-ss", f"{start_s:.3f}", "-t", f"{dur_s:.3f}",
+             "-ar", "16000", "-ac", "1", "-sample_fmt", "s16", str(out_path)],
+            capture_output=True,
+        )
+        if r.returncode == 0 and out_path.exists() and out_path.stat().st_size > 0:
+            seg_paths.append(out_path)
+
+    if not seg_paths:
+        return None
+
+    if len(seg_paths) == 1:
+        return seg_paths[0]
+
+    # Concatenate all segments into one file
+    list_file = tmp / "list.txt"
+    list_file.write_text("\n".join(f"file '{p.name}'" for p in seg_paths))
+    concat_out = tmp / f"cluster_{cluster_id}.wav"
+    r = subprocess.run(
+        [ffmpeg, "-y", "-f", "concat", "-safe", "0",
+         "-i", str(list_file), "-ar", "16000", "-ac", "1", str(concat_out)],
+        capture_output=True,
+        cwd=str(tmp),
+    )
+    if r.returncode == 0 and concat_out.exists():
+        return concat_out
+    return seg_paths[0]   # fallback to the longest single segment
+
+
 def run_speaker_matching_step(meeting_id: str, db: Session | None = None) -> None:
     """
-    Compute embeddings for each speaker cluster and compare to known people.
-    Sets suggested assignments and duplicate hints on clusters.
+    Compute per-cluster voice embeddings and match against the known people library.
+    Each cluster gets its own embedding derived from its speaker's actual audio windows,
+    not the full meeting audio.
     """
     close = db is None
     if db is None:
@@ -211,18 +292,31 @@ def run_speaker_matching_step(meeting_id: str, db: Session | None = None) -> Non
                 _finish_job(job, db)
                 return
 
-            # For a real implementation, extract per-cluster audio segments.
-            # Here we compute one embedding of the full audio per cluster as a placeholder.
-            # TODO: extract actual cluster-specific audio windows using start/end timestamps.
+            # Build cluster → segments lookup
+            all_segments = (
+                db.query(TranscriptSegment)
+                .filter(TranscriptSegment.meeting_id == meeting_id)
+                .all()
+            )
+            segs_by_cluster: dict[str, list] = {}
+            for seg in all_segments:
+                segs_by_cluster.setdefault(seg.cluster_id, []).append(seg)
+
+            # Compute one embedding per cluster from that speaker's audio windows
             cluster_embeddings: dict[str, any] = {}
             for cluster in clusters:
                 try:
-                    embedding = embedding_svc.compute_embedding(norm_path)
+                    cluster_segs = segs_by_cluster.get(cluster.id, [])
+                    audio_path = _extract_cluster_audio(norm_path, cluster_segs, cluster.id)
+                    if audio_path is None:
+                        # Fallback: embed the full audio (better than nothing)
+                        audio_path = norm_path
+                    embedding = embedding_svc.compute_embedding(audio_path)
                     emb_path = voice_embedding_path(f"cluster_{cluster.id}")
                     embedding_svc.save_embedding(embedding, emb_path)
                     cluster_embeddings[cluster.id] = embedding
                 except Exception:
-                    pass  # Non-fatal — skip embedding for this cluster
+                    pass  # Non-fatal — skip this cluster
 
             # Load known person embeddings
             from app.models.person import Person

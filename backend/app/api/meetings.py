@@ -10,15 +10,42 @@ from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.models.meeting import Meeting
-from app.schemas import MeetingCreate, MeetingListOut, MeetingOut
+from app.schemas import MeetingCreate, MeetingListOut, MeetingOut, MeetingPatch
 
 router = APIRouter(prefix="/meetings", tags=["meetings"])
 
 
 @router.get("", response_model=list[MeetingListOut])
 def list_meetings(db: Session = Depends(get_db)):
-    """Return all meetings ordered by creation date descending."""
-    return db.query(Meeting).order_by(Meeting.created_at.desc()).all()
+    """Return all meetings ordered by creation date descending, with identified speaker names."""
+    from app.models.person import Person
+    from app.models.speaker import SpeakerCluster
+
+    meetings = db.query(Meeting).order_by(Meeting.created_at.desc()).all()
+    if not meetings:
+        return []
+
+    # Single query: get all assigned person names grouped by meeting_id
+    meeting_ids = [m.id for m in meetings]
+    rows = (
+        db.query(SpeakerCluster.meeting_id, Person.display_name)
+        .join(Person, SpeakerCluster.assigned_person_id == Person.id)
+        .filter(SpeakerCluster.meeting_id.in_(meeting_ids))
+        .all()
+    )
+    speakers_by_meeting: dict[str, list[str]] = {}
+    seen: set[tuple] = set()
+    for mid, name in rows:
+        if (mid, name) not in seen:
+            speakers_by_meeting.setdefault(mid, []).append(name)
+            seen.add((mid, name))
+
+    result = []
+    for m in meetings:
+        out = MeetingListOut.model_validate(m)
+        out.speakers_preview = speakers_by_meeting.get(m.id, [])[:4]
+        result.append(out)
+    return result
 
 
 @router.post("", response_model=MeetingOut, status_code=201)
@@ -29,19 +56,13 @@ def create_meeting(body: MeetingCreate, db: Session = Depends(get_db)):
         title=body.title,
         started_at=datetime.now(timezone.utc),
         status="recording",
+        calendar_event_id=body.calendar_event_id,
+        calendar_source=body.calendar_source,
     )
     db.add(meeting)
     db.commit()
     db.refresh(meeting)
     return meeting
-
-from pydantic import BaseModel
-
-class MeetingPatch(BaseModel):
-    title: str | None = None
-    audio_file_path: str | None = None
-    ended_at: datetime | None = None
-    duration_seconds: float | None = None
 
 @router.patch("/{meeting_id}", response_model=MeetingOut)
 def update_meeting(meeting_id: str, body: MeetingPatch, db: Session = Depends(get_db)):
@@ -58,6 +79,10 @@ def update_meeting(meeting_id: str, body: MeetingPatch, db: Session = Depends(ge
         meeting.ended_at = body.ended_at
     if body.duration_seconds is not None:
         meeting.duration_seconds = body.duration_seconds
+    if body.calendar_event_id is not None:
+        meeting.calendar_event_id = body.calendar_event_id
+    if body.calendar_source is not None:
+        meeting.calendar_source = body.calendar_source
 
     meeting.updated_at = datetime.now(timezone.utc)
     db.commit()

@@ -63,6 +63,12 @@ final class APIClient {
         try await get("/health/dependencies")
     }
 
+    func fetchOllamaModels() async throws -> [String] {
+        struct OllamaModelsResponse: Decodable { let models: [String] }
+        let resp: OllamaModelsResponse = try await get("/health/ollama/models")
+        return resp.models
+    }
+
     // MARK: - Meetings
 
     func fetchMeetings() async throws -> [Meeting] {
@@ -73,8 +79,18 @@ final class APIClient {
         try await get("/meetings/\(id)")
     }
 
-    func createMeeting(title: String) async throws -> Meeting {
-        try await post("/meetings", body: ["title": title])
+    func createMeeting(title: String, calendarEventId: String? = nil, calendarSource: String? = nil) async throws -> Meeting {
+        struct Body: Encodable {
+            let title: String
+            let calendarEventId: String?
+            let calendarSource: String?
+            enum CodingKeys: String, CodingKey {
+                case title
+                case calendarEventId = "calendar_event_id"
+                case calendarSource  = "calendar_source"
+            }
+        }
+        return try await post("/meetings", body: Body(title: title, calendarEventId: calendarEventId, calendarSource: calendarSource))
     }
 
     func updateMeeting(id: String, audioFilePath: String, durationSeconds: Double? = nil) async throws -> Meeting {
@@ -167,6 +183,14 @@ final class APIClient {
 
     func fetchPeople() async throws -> [Person] {
         try await get("/people")
+    }
+
+    func fetchPersonMeetings(personId: String) async throws -> [Meeting] {
+        try await get("/people/\(personId)/meetings")
+    }
+
+    func recomputePersonEmbedding(personId: String) async throws {
+        let _: EmptyResponse = try await post("/people/\(personId)/recompute-embedding", body: EmptyBody())
     }
 
     func createPerson(displayName: String, notes: String? = nil) async throws -> Person {

@@ -43,3 +43,15 @@ def init_db() -> None:
     # Import models so they register with Base.metadata
     import app.models  # noqa: F401
     Base.metadata.create_all(bind=engine)
+
+    # SQLite migration: add calendar columns to meetings if missing
+    from sqlalchemy import text
+    from sqlalchemy.exc import OperationalError
+
+    with engine.connect() as conn:
+        for col in ("calendar_event_id VARCHAR", "calendar_source VARCHAR"):
+            try:
+                conn.execute(text(f"ALTER TABLE meetings ADD COLUMN {col}"))
+                conn.commit()
+            except OperationalError:
+                pass  # Column already exists

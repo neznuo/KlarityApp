@@ -30,5 +30,20 @@
 	<string>NSApplication</string>
 	<key>NSScreenCaptureUsageDescription</key>
 	<string>KlarityApp needs Screen Recording permission to capture system audio (Zoom, Meets, etc). No video frames are ever recorded.</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.klarity.oauth</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>klarity</string>
+			</array>
+		</dict>
+	</array>
+	<key>KlarityGoogleClientID</key>
+	<string>REPLACE_WITH_GOOGLE_CLIENT_ID</string>
+	<key>KlarityMicrosoftClientID</key>
+	<string>REPLACE_WITH_MICROSOFT_CLIENT_ID</string>
 </dict>
 </plist>

@@ -1,15 +1,32 @@
 import SwiftUI
 
+// MARK: - App Delegate
+
+/// Handles system-level callbacks that SwiftUI doesn't expose as modifiers.
+final class KlarityAppDelegate: NSObject, NSApplicationDelegate {
+    /// Called when the user clicks the Dock icon while all windows are hidden/closed.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        WindowManager.shared.showMainWindow()
+        return true
+    }
+}
+
 @main
 struct KlarityApp: App {
+    @NSApplicationDelegateAdaptor(KlarityAppDelegate.self) private var appDelegate
     @StateObject private var appState = AppState()
+    @StateObject private var recordingManager = RecordingViewModel()
+    @StateObject private var menuBarManager = MenuBarManager()
 
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environmentObject(appState)
+                .environmentObject(recordingManager)
+                .environmentObject(menuBarManager)
+                .preferredColorScheme(appState.preferredColorScheme)
         }
-        .defaultSize(width: 1200, height: 800)
+        .defaultSize(width: 1280, height: 820)
         .commands {
             CommandGroup(replacing: .newItem) {}
         }
@@ -17,6 +34,9 @@ struct KlarityApp: App {
         Settings {
             SettingsView()
                 .environmentObject(appState)
+                .environmentObject(recordingManager)
+                .environmentObject(menuBarManager)
+                .preferredColorScheme(appState.preferredColorScheme)
         }
     }
 }
@@ -31,6 +51,21 @@ final class AppState: ObservableObject {
     @Published var backendReachable: Bool = false
     @Published var backendStartupError: String?
     @Published var dependencies: DependenciesResult?
+
+    /// "system" | "light" | "dark" — persisted across launches.
+    @Published var colorSchemePreference: String = UserDefaults.standard.string(forKey: "klarityColorScheme") ?? "system" {
+        didSet { UserDefaults.standard.set(colorSchemePreference, forKey: "klarityColorScheme") }
+    }
+    var preferredColorScheme: ColorScheme? {
+        switch colorSchemePreference {
+        case "light": return .light
+        case "dark":  return .dark
+        default:      return nil
+        }
+    }
+
+    /// Set to true by the menu bar "New Recording" button to trigger the sheet in ContentView.
+    @Published var triggerNewRecording: Bool = false
 
     private let backend = BackendProcessManager.shared
 
