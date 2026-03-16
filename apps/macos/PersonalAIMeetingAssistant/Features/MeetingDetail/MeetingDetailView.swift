@@ -9,6 +9,11 @@ struct MeetingDetailView: View {
     @State private var selectedTab: Tab = .transcript
     @State private var playerSeekTarget: Double? = nil
 
+    // Inline title editing
+    @State private var isEditingTitle = false
+    @State private var editTitle = ""
+    @FocusState private var titleFieldFocused: Bool
+
     enum Tab { case transcript, summary }
 
     var body: some View {
@@ -99,12 +104,49 @@ struct MeetingDetailView: View {
             // Left: title + metadata
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
-                    Text(vm.meeting?.title ?? "Loading…")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(AppTheme.Colors.primaryText)
-                        .lineLimit(1)
-                    if vm.meeting?.status.needsPolling == true {
-                        ProgressView().scaleEffect(0.55).frame(width: 14, height: 14)
+                    if isEditingTitle {
+                        TextField("Meeting title", text: $editTitle)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(AppTheme.Colors.primaryText)
+                            .focused($titleFieldFocused)
+                            .onSubmit { commitTitleEdit() }
+                            .onChange(of: titleFieldFocused) { _, focused in
+                                if !focused { commitTitleEdit() }
+                            }
+                        Button { commitTitleEdit() } label: {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 16))
+                                .foregroundStyle(AppTheme.Colors.brandPrimary)
+                        }
+                        .buttonStyle(.plain)
+                        Button { isEditingTitle = false } label: {
+                            Image(systemName: "xmark.circle")
+                                .font(.system(size: 16))
+                                .foregroundStyle(AppTheme.Colors.tertiaryText)
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        Text(vm.meeting?.title ?? "Loading…")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(AppTheme.Colors.primaryText)
+                            .lineLimit(1)
+                        if vm.meeting?.status.needsPolling == true {
+                            ProgressView().scaleEffect(0.55).frame(width: 14, height: 14)
+                        }
+                        if vm.meeting != nil {
+                            Button {
+                                editTitle = vm.meeting?.title ?? ""
+                                isEditingTitle = true
+                                titleFieldFocused = true
+                            } label: {
+                                Image(systemName: "pencil")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundStyle(AppTheme.Colors.tertiaryText)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Rename meeting")
+                        }
                     }
                 }
 
@@ -149,6 +191,13 @@ struct MeetingDetailView: View {
         .padding(.horizontal, 20)
         .padding(.vertical, 14)
         .background(AppTheme.Colors.background)
+    }
+
+    private func commitTitleEdit() {
+        let trimmed = editTitle.trimmingCharacters(in: .whitespaces)
+        isEditingTitle = false
+        guard !trimmed.isEmpty, trimmed != vm.meeting?.title else { return }
+        Task { await vm.renameCurrentMeeting(title: trimmed) }
     }
 
     private func durationString(_ seconds: Int) -> String {

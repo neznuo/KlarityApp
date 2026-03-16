@@ -115,6 +115,10 @@ final class APIClient {
         return try decoder.decode(Meeting.self, from: data)
     }
 
+    func renameMeeting(id: String, title: String) async throws -> Meeting {
+        try await patch("/meetings/\(id)", body: ["title": title])
+    }
+
     func deleteMeeting(id: String) async throws {
         try await delete("/meetings/\(id)")
     }
