@@ -24,6 +24,7 @@ final class SingleTrackWriter {
     private var isPaused = false
     private var lastPTS: CMTime = .invalid
     private var outputURL: URL?
+    private var pendingBuffers: [CMSampleBuffer] = []
 
     private(set) var hasReceivedData = false
 
@@ -69,7 +70,16 @@ final class SingleTrackWriter {
     func write(buffer: CMSampleBuffer) {
         queue.async { [weak self] in
             guard let self = self, !self.isPaused else { return }
-            self.writeSync(buffer: buffer)
+            self.pendingBuffers.append(buffer)
+            self.drainPendingBuffers()
+        }
+    }
+
+    private func drainPendingBuffers() {
+        guard let input = audioInput else { return }
+        while !pendingBuffers.isEmpty && input.isReadyForMoreMediaData {
+            let next = pendingBuffers.removeFirst()
+            writeSync(buffer: next)
         }
     }
 
@@ -187,6 +197,7 @@ final class SingleTrackWriter {
         hasReceivedData = false
         lastPTS = .invalid
         outputURL = nil
+        pendingBuffers.removeAll()
     }
 }
 
