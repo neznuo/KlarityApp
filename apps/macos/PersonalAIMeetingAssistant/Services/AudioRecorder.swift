@@ -596,15 +596,7 @@ final class AudioRecorder: NSObject, ObservableObject, SCStreamOutput {
 
                 // Step 4: Setup microphone
                 self.logger.info("Step 4: Setting up microphone...")
-                do {
-                    try self.setupMicrophone()
-                } catch {
-                    let e = "Mic setup failed: \(error.localizedDescription)"
-                    self.logger.error("\(e, privacy: .public)")
-                    self.errorMessage = e
-                    self.resetToIdle()
-                    return
-                }
+                self.setupMicrophone()
                 self.logger.info("Step 4: Mic OK")
 
                 // Step 5: Setup SCStream
@@ -722,13 +714,14 @@ final class AudioRecorder: NSObject, ObservableObject, SCStreamOutput {
 
     // MARK: - Setup Subsystems
 
-    private func setupMicrophone() throws {
+    private func setupMicrophone() {
         let engine = AVAudioEngine()
         let inputNode = engine.inputNode
 
-        // Voice Processing IO provides hardware-level acoustic echo cancellation,
-        // suppressing the system audio playing through speakers from the mic signal.
-        try inputNode.setVoiceProcessingEnabled(true)
+        // Note: setVoiceProcessingEnabled(true) was removed because VPIO puts macOS
+        // into a system-wide "phone call" audio mode that reduces playback volume for
+        // all applications, making the user's active meeting (Zoom/Teams/etc.) inaudible.
+        // The mild mic echo in the recording is acceptable — ElevenLabs Scribe handles it.
 
         let hwFormat = inputNode.inputFormat(forBus: 0)
         let mixer = self.mixer  // capture the reference for the tap closure
