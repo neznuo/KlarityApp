@@ -45,15 +45,13 @@ def check_dependencies():
         "required": True,
     })
 
-    # ── Speaker recognition (Resemblyzer + webrtcvad) ────────────────────────
-    # webrtcvad calls `import pkg_resources` which requires setuptools<80.
-    # We do a live import to catch this exact failure mode.
-    resemblyzer_status, resemblyzer_detail = _check_resemblyzer()
+    # ── Speaker recognition (ONNX + kaldi-native-fbank) ─────────────────────
+    onnx_status, onnx_detail = _check_onnx_speaker()
     checks.append({
-        "key": "resemblyzer",
-        "name": "Speaker Recognition (Resemblyzer)",
-        "status": resemblyzer_status,
-        "detail": resemblyzer_detail,
+        "key": "speaker_encoder",
+        "name": "Speaker Recognition (ONNX)",
+        "status": onnx_status,
+        "detail": onnx_detail,
         "required": False,   # App works without it; only speaker auto-match is degraded
     })
 
@@ -129,25 +127,26 @@ def list_ollama_models():
         return {"models": []}
 
 
-def _check_resemblyzer() -> tuple[str, str]:
+def _check_onnx_speaker() -> tuple[str, str]:
     """
-    Try to import resemblyzer end-to-end.
-    webrtcvad (a resemblyzer dep) calls `import pkg_resources` which requires
-    setuptools<80 — this check catches that failure mode explicitly.
+    Verify onnxruntime and the bundled speaker encoder model are available.
     Returns (status, detail).
     """
     try:
-        from resemblyzer import preprocess_wav, VoiceEncoder  # noqa: F401
-        return "ok", "Resemblyzer available — speaker recognition enabled"
-    except ModuleNotFoundError as exc:
-        if "pkg_resources" in str(exc):
-            return "missing", (
-                "pkg_resources not found — run: pip install 'setuptools<80' "
-                "(webrtcvad requires setuptools < 80)"
-            )
-        return "missing", f"resemblyzer not installed: {exc}"
-    except Exception as exc:
-        return "missing", f"resemblyzer import failed: {exc}"
+        import onnxruntime  # noqa: F401
+    except ModuleNotFoundError:
+        return "missing", "onnxruntime not installed — run: pip install onnxruntime"
+
+    try:
+        import kaldi_native_fbank  # noqa: F401
+    except ModuleNotFoundError:
+        return "missing", "kaldi-native-fbank not installed — run: pip install kaldi-native-fbank"
+
+    from app.services.embeddings.speaker_embedding import _MODEL_PATH
+    if not _MODEL_PATH.exists():
+        return "missing", f"Speaker encoder model not found at {_MODEL_PATH}"
+
+    return "ok", f"ONNX speaker encoder ready ({_MODEL_PATH.name})"
 
 
 def _check_ollama(endpoint: str, model: str) -> tuple[str, str]:

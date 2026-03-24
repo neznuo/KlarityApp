@@ -1,8 +1,11 @@
 """
-Speaker embedding service using Resemblyzer.
+Speaker embedding service using WeSpeaker ECAPA-TDNN512-LM (ONNX).
 
-Generates d-vector embeddings from audio clips and compares them
-using cosine similarity against the known people library.
+Generates 192-dim d-vector embeddings from 16kHz mono WAV files and compares
+them using cosine similarity against the known people library.
+
+Replaces the previous resemblyzer-based implementation with a fully
+torch-free pipeline: kaldi-native-fbank preprocessing + onnxruntime inference.
 """
 
 from __future__ import annotations
@@ -12,6 +15,17 @@ from pathlib import Path
 import numpy as np
 
 from app.core.config import settings
+from app.services.embeddings.audio_utils import (
+    EMBEDDING_DIM,  # noqa: F401 — exported for callers that need it
+    MODEL_NAME,
+    compute_embedding_from_fbank,
+    compute_fbank,
+)
+
+# Path to the bundled ONNX model, relative to the backend package root.
+# At runtime inside the .app bundle the CWD is set to Resources/backend,
+# so this resolves correctly both in dev and in the packaged app.
+_MODEL_PATH = Path(__file__).parent.parent.parent.parent / "models" / "speaker_encoder.onnx"
 
 
 def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
@@ -25,35 +39,48 @@ def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
 
 class SpeakerEmbeddingService:
     """
-    Creates and compares voice embeddings using Resemblyzer.
+    Creates and compares voice embeddings using WeSpeaker ECAPA-TDNN512-LM (ONNX).
     Embeddings are saved as .npy files in the voices directory.
+
+    The ONNX session is lazy-loaded on first use and reused across calls.
+    All methods maintain the same public API as the previous resemblyzer-based
+    implementation so processing_worker.py requires no changes.
     """
 
-    def __init__(self):
-        self._encoder = None  # Lazy-loaded — Resemblyzer is heavy to import
+    def __init__(self) -> None:
+        self._session = None  # lazy-loaded onnxruntime.InferenceSession
 
-    def _get_encoder(self):
-        if self._encoder is None:
+    def _get_session(self):
+        if self._session is None:
             try:
-                from resemblyzer import VoiceEncoder
-                self._encoder = VoiceEncoder()
+                import onnxruntime as ort
             except ImportError as e:
                 raise RuntimeError(
-                    "resemblyzer is not installed. Run: pip install resemblyzer"
+                    "onnxruntime is not installed. Run: pip install onnxruntime"
                 ) from e
-        return self._encoder
+
+            if not _MODEL_PATH.exists():
+                raise RuntimeError(
+                    f"Speaker encoder model not found at {_MODEL_PATH}. "
+                    "Re-run the Xcode build phase to bundle the model."
+                )
+
+            self._session = ort.InferenceSession(
+                str(_MODEL_PATH),
+                providers=["CPUExecutionProvider"],
+            )
+        return self._session
 
     def compute_embedding(self, audio_path: Path) -> np.ndarray:
         """
-        Compute a speaker d-vector embedding from a WAV file.
-        Expects 16kHz mono WAV (preprocessed audio).
-        """
-        from resemblyzer import preprocess_wav
+        Compute a speaker embedding from a WAV file.
+        Expects 16kHz mono WAV (produced by the FFmpeg preprocessor).
 
-        encoder = self._get_encoder()
-        wav = preprocess_wav(audio_path)
-        embedding = encoder.embed_utterance(wav)
-        return embedding
+        Returns:
+            L2-normalized np.ndarray of shape [192].
+        """
+        feats = compute_fbank(audio_path)
+        return compute_embedding_from_fbank(feats, self._get_session())
 
     def save_embedding(self, embedding: np.ndarray, save_path: Path) -> Path:
         """Persist an embedding vector to a .npy file."""

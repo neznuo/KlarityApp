@@ -263,7 +263,8 @@ struct MenuBarRecordingSection: View {
                 Rectangle().fill(AppTheme.Colors.border).frame(width: 1, height: 18).padding(.horizontal, 4)
 
                 Image(systemName: "mic.fill")
-                    .font(.system(size: 12)).foregroundStyle(AppTheme.Colors.tertiaryText)
+                    .font(.system(size: 12))
+                    .foregroundStyle(vm.isPaused ? Color.orange.opacity(0.7) : Color.red.opacity(0.7))
                     .padding(.trailing, 14)
 
                 Spacer(minLength: 0)
@@ -271,9 +272,14 @@ struct MenuBarRecordingSection: View {
             .frame(height: 42)
             .background(
                 RoundedRectangle(cornerRadius: 21)
-                    .fill(AppTheme.Colors.hoverFill)
+                    .fill(vm.isPaused
+                          ? Color.orange.opacity(0.12)
+                          : Color.red.opacity(0.12))
                     .overlay(RoundedRectangle(cornerRadius: 21)
-                        .stroke(AppTheme.Colors.subtleBorder, lineWidth: 0.5))
+                        .stroke(vm.isPaused
+                                ? Color.orange.opacity(0.45)
+                                : Color.red.opacity(0.45),
+                                lineWidth: 1))
             )
             .padding(.horizontal, 14)
             .padding(.bottom, 10)

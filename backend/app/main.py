@@ -43,7 +43,7 @@ def on_startup() -> None:
     init_db()
     logger.info(f"Storage root: {settings.storage_path}")
     logger.info("Database initialized.")
-    
+
     # Load settings from Database
     db = SessionLocal()
     try:
@@ -57,6 +57,40 @@ def on_startup() -> None:
     finally:
         db.close()
     logger.info("Loaded runtime settings from DB.")
+
+    _check_embedding_model_version()
+
+
+def _check_embedding_model_version() -> None:
+    """
+    Detect stale voice embeddings from a previous model (e.g. resemblyzer).
+
+    Writes a version marker file (voices/embedding_model.txt) on first run.
+    If the marker is missing or names a different model, logs a warning so the
+    user knows to re-enroll their voice profiles.  Files are never deleted
+    automatically — callers use GET /people/embedding-status to check.
+    """
+    from app.services.embeddings.audio_utils import MODEL_NAME
+
+    marker_path = settings.voices_path / "embedding_model.txt"
+
+    if not marker_path.exists():
+        # First run with this model — write the marker
+        marker_path.write_text(MODEL_NAME)
+        logger.info(f"Speaker embedding model marker written: {MODEL_NAME}")
+        return
+
+    stored_model = marker_path.read_text().strip()
+    if stored_model != MODEL_NAME:
+        logger.warning(
+            "Speaker embedding model has changed: stored=%s current=%s. "
+            "Existing voice profiles are incompatible and must be re-enrolled. "
+            "Use GET /people/embedding-status for details.",
+            stored_model,
+            MODEL_NAME,
+        )
+    else:
+        logger.info(f"Speaker embedding model verified: {MODEL_NAME}")
 
 
 # Register all API routers

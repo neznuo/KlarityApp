@@ -7,7 +7,7 @@ A **local-first macOS desktop application** that records meetings, transcribes t
 ## Architecture
 
 ```
-SwiftUI macOS App  →  Local FastAPI Backend  →  ElevenLabs / Resemblyzer / Ollama / OpenAI
+SwiftUI macOS App  →  Local FastAPI Backend  →  ElevenLabs / ONNX / Ollama / OpenAI
 ```
 
 | Layer     | Technology                         |
@@ -15,11 +15,11 @@ SwiftUI macOS App  →  Local FastAPI Backend  →  ElevenLabs / Resemblyzer / O
 | Frontend  | Swift + SwiftUI (macOS)             |
 | Backend   | Python 3.11 + FastAPI + Uvicorn     |
 | Database  | SQLite via SQLAlchemy               |
-| Audio capture | AVFoundation: SCStream (system audio) + AVCaptureSession (mic) |
+| Audio capture | Core Audio Tap `CATapDescription` (system audio, macOS 14.2+) + `AVAudioEngine` (mic) |
 | Audio mixing  | AVMutableComposition + AVAssetExportSession (post-recording mix to .m4a) |
 | Audio preprocessing | FFmpeg (16kHz mono normalization) |
 | STT       | ElevenLabs Scribe                   |
-| Embeddings| Resemblyzer                         |
+| Embeddings| WeSpeaker ECAPA-TDNN512-LM (ONNX, torch-free) |
 | LLM       | OpenAI / Anthropic / Gemini / Ollama|
 | Calendar  | Google Calendar API v3 + Microsoft Graph (PKCE OAuth, Swift-only) |
 
@@ -47,8 +47,12 @@ KlarityApp/
 │               ├── People/         # Known people library
 │               └── Settings/       # Provider & storage configuration
 ├── scripts/
-│   └── bundle_backend.sh           # Xcode build phase: copies venv into .app
+│   └── bundle_backend.sh           # Xcode build phase: copies venv + models into .app
+├── .gitattributes                  # Marks .onnx and .npy files as binary
+├── tasks.md                        # Active development task tracker
 └── backend/
+    ├── models/
+    │   └── speaker_encoder.onnx    # WeSpeaker ECAPA-TDNN512-LM (24 MB, bundled)
     ├── app/
     │   ├── api/                    # FastAPI routers
     │   ├── core/                   # config.py
@@ -58,7 +62,7 @@ KlarityApp/
     │   ├── services/
     │   │   ├── audio/              # FFmpeg preprocessor
     │   │   ├── transcription/      # ElevenLabs provider + base
-    │   │   ├── embeddings/         # Resemblyzer speaker embeddings
+    │   │   ├── embeddings/         # ONNX speaker embeddings (audio_utils.py + speaker_embedding.py)
     │   │   ├── summarization/      # OpenAI / Ollama / Anthropic providers
     │   │   └── storage/            # File layout helpers
     │   ├── workers/                # Processing pipeline orchestration
@@ -104,7 +108,7 @@ cp .env.example .env
 3. Uncheck **"Based on dependency analysis"** so it always runs
 4. Move the phase to run **after Compile Sources**
 
-Every subsequent `⌘R` or Archive will automatically copy `backend/app/` + `backend/venv/` into `.app/Contents/Resources/backend/`.
+Every subsequent `⌘R` or Archive will automatically copy `backend/app/`, `backend/venv/`, and `backend/models/` into `.app/Contents/Resources/backend/`.
 
 ### 3. Run
 
@@ -125,8 +129,11 @@ KlarityApp.app/
     └── Resources/
         └── backend/
             ├── app/              ← FastAPI source code
-            └── venv/             ← Python virtualenv with all dependencies
+            ├── models/           ← speaker_encoder.onnx (ECAPA-TDNN512-LM, 24 MB)
+            └── venv/             ← Python virtualenv with all dependencies (~580 MB)
 ```
+
+The entire backend — Python packages, ONNX model, and source — is self-contained in the bundle. Users need no Python, pip, or internet connection. Distribute by sharing the `.app` directly or wrapping it in a `.dmg`.
 
 | Component | Role |
 |-----------|------|
@@ -143,7 +150,7 @@ Users see a single `.app`. There is no separate server to start.
 | Step | Actor | Description |
 |------|-------|-------------|
 | 1    | User  | Click **New Recording** — upcoming calendar events appear as one-tap pills to auto-fill the title |
-| 2    | App   | Create meeting record (with optional `calendar_event_id`/`calendar_source`), start capture: SCStream (system audio) + AVCaptureSession (mic) |
+| 2    | App   | Create meeting record (with optional `calendar_event_id`/`calendar_source`), start capture: Core Audio Tap (system audio) + AVAudioEngine (mic) |
 | 3    | User  | Stop recording when meeting ends |
 | 4    | App   | Mix system + mic temp files into final `audio.m4a` via AVMutableComposition export |
 | 5    | Backend | Preprocess audio → Transcribe (ElevenLabs) → Embed speakers |
@@ -207,12 +214,16 @@ Default storage: `~/Documents/AI-Meetings`
 
 ## Speaker Recognition
 
-- Embeddings via **Resemblyzer** (d-vectors)
-- Cosine similarity matching against known people library
-- Thresholds configurable in Settings:
-  - Suggest match: `0.75`
-  - Auto-assign: `0.90`
-  - Duplicate detection: `0.82`
+- Embeddings via **WeSpeaker ECAPA-TDNN512-LM** (192-dim d-vectors, ONNX, torch-free)
+- Preprocessing: Kaldi-style log-mel fbank (80 bins, 25ms frame, 10ms hop) via `kaldi-native-fbank`
+- Cosine similarity matching against known people library (`voices/*.npy`)
+- Thresholds configurable in `.env` / Settings:
+  - Suggest match: `SPEAKER_SUGGEST_THRESHOLD=0.75`
+  - Auto-assign: `SPEAKER_AUTO_ASSIGN_THRESHOLD=0.90`
+  - Duplicate detection: `SPEAKER_DUPLICATE_THRESHOLD=0.82`
+- Migration: if the speaker model is updated, existing voice profiles must be re-enrolled. Check `GET /people/embedding-status` for compatibility status.
+
+> **Note:** Thresholds are calibrated for the ECAPA-TDNN512-LM model. If you swap `backend/models/speaker_encoder.onnx`, recalibrate using real voice samples — see `backend/models/README.md`.
 
 ---
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.db.database import get_db
 from app.models.person import Person
 from app.schemas import PersonCreate, PersonOut, PersonUpdate
@@ -82,6 +83,36 @@ def get_person_meetings(person_id: str, db: Session = Depends(get_db)):
         .all()
     )
     return [MeetingListOut.model_validate(m) for m in meetings]
+
+
+@router.get("/embedding-status")
+def get_embedding_status(db: Session = Depends(get_db)):
+    """
+    Report whether stored voice embeddings are compatible with the current model.
+
+    Returns:
+        - model: the model name the current embeddings should use
+        - needs_reenrollment: true if stored embeddings were created by a different model
+        - affected_people: list of person IDs that have an incompatible .npy file
+    """
+    from app.services.embeddings.audio_utils import MODEL_NAME
+    from app.services.storage.file_layout import voice_embedding_path
+
+    marker_path = settings.voices_path / "embedding_model.txt"
+    stored_model = marker_path.read_text().strip() if marker_path.exists() else None
+    needs_reenrollment = stored_model != MODEL_NAME
+
+    affected: list[str] = []
+    if needs_reenrollment:
+        people = db.query(Person).all()
+        affected = [p.id for p in people if voice_embedding_path(p.id).exists()]
+
+    return {
+        "model": MODEL_NAME,
+        "stored_model": stored_model,
+        "needs_reenrollment": needs_reenrollment,
+        "affected_people": affected,
+    }
 
 
 @router.post("/{person_id}/recompute-embedding")

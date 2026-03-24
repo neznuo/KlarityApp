@@ -260,7 +260,8 @@ final class DualTrackMixer {
         monoLayout.mChannelLayoutTag = kAudioChannelLayoutTag_Mono
         let monoLayoutData = Data(bytes: &monoLayout, count: MemoryLayout<AudioChannelLayout>.size)
 
-        // SCStream delivers Float32 non-interleaved 48kHz stereo.
+        // System audio is normalised to Float32 non-interleaved 48 kHz stereo by
+        // SystemAudioTapEngine's AVAudioConverter before reaching this writer.
         // WAV only supports integer LPCM through AVAssetWriter; use 16-bit interleaved.
         // AudioConverter handles Float32 → Int16 and non-interleaved → interleaved.
         systemWriter = SingleTrackWriter(

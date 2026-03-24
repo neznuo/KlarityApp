@@ -1,0 +1,3 @@
+# Mark ONNX model files as binary so git doesn't try to diff them
+*.onnx binary
+*.npy binary

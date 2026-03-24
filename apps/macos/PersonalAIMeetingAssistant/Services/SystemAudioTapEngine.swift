@@ -14,10 +14,17 @@ import os.log
 ///  2. `AudioHardwareCreateProcessTap` — creates the tap audio object (macOS 14.2+).
 ///  3. `AudioHardwareCreateAggregateDevice` — wraps tap + system output in a virtual device.
 ///  4. `AudioDeviceCreateIOProcIDWithBlock` — delivers raw PCM buffers from the aggregate device.
-///  5. Converts each buffer to `AVAudioPCMBuffer` (with a data copy) and calls the handler.
+///  5. `AVAudioConverter` normalises every buffer to 48 kHz Float32 non-interleaved stereo
+///     before calling the handler, regardless of the tap's native rate/format.
 @available(macOS 14.2, *)
 final class SystemAudioTapEngine {
     typealias BufferHandler = (AVAudioPCMBuffer, AVAudioTime) -> Void
+
+    /// Canonical output format handed to callers.  DualTrackMixer expects this.
+    static let outputFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                            sampleRate: 48_000,
+                                            channels: 2,
+                                            interleaved: false)!
 
     private let bufferHandler: BufferHandler
     private var processTapID: AudioObjectID = kAudioObjectUnknown
@@ -25,6 +32,9 @@ final class SystemAudioTapEngine {
     private var deviceProcID: AudioDeviceIOProcID?
     private(set) var isRunning = false
     private let queue = DispatchQueue(label: "com.klarity.systemAudioTap", qos: .userInitiated)
+
+    // Lazily-created on the first IOProc callback once the actual delivery format is known.
+    private var audioConverter: AVAudioConverter?
 
     init(bufferHandler: @escaping BufferHandler) {
         self.bufferHandler = bufferHandler
@@ -63,6 +73,17 @@ final class SystemAudioTapEngine {
             throw tapError("AVAudioFormat(streamDescription:)", status: -1)
         }
 
+        // Log the exact ASBD so we can diagnose format/interleaving issues in Console.
+        os_log("[SystemAudioTapEngine] Tap format: %.0f Hz, %d ch, interleaved=%d, bitsPerCh=%d, bytesPerFrame=%d, bytesPerPacket=%d, framesPerPacket=%d, formatFlags=0x%x",
+               tapFormat.sampleRate,
+               tapFormat.channelCount,
+               tapFormat.isInterleaved ? 1 : 0,
+               tapASBD.mBitsPerChannel,
+               tapASBD.mBytesPerFrame,
+               tapASBD.mBytesPerPacket,
+               tapASBD.mFramesPerPacket,
+               tapASBD.mFormatFlags)
+
         // 5. Build the aggregate device that exposes the tap as an input stream.
         //    The sub-device list provides the clock reference; the tap list provides capture.
         let aggUID = UUID().uuidString
@@ -98,7 +119,7 @@ final class SystemAudioTapEngine {
         // 6. Register an I/O proc to receive audio buffers on `queue`.
         var procID: AudioDeviceIOProcID?
         err = AudioDeviceCreateIOProcIDWithBlock(&procID, aggregateDeviceID, queue) { [weak self] _, inInputData, inInputTime, _, _ in
-            self?.handleAudio(bufferList: inInputData, timeStamp: inInputTime, format: tapFormat)
+            self?.handleAudio(bufferList: inInputData, timeStamp: inInputTime, tapFormat: tapFormat)
         }
         guard err == noErr else {
             AudioHardwareDestroyAggregateDevice(aggregateDeviceID)
@@ -145,6 +166,8 @@ final class SystemAudioTapEngine {
             processTapID = kAudioObjectUnknown
         }
 
+        _loggedFirstCallback = false
+        audioConverter = nil
         os_log("[SystemAudioTapEngine] Stopped")
     }
 
@@ -152,17 +175,104 @@ final class SystemAudioTapEngine {
 
     // MARK: - IOProc callback
 
+    private var _loggedFirstCallback = false
+
     private func handleAudio(bufferList: UnsafePointer<AudioBufferList>,
                               timeStamp: UnsafePointer<AudioTimeStamp>,
-                              format: AVAudioFormat) {
-        // Wrap the IOProc buffer without copying (no-copy), then immediately copy it into
-        // a new owning buffer so the data safely outlives this IOProc invocation when the
-        // buffer handler dispatches it asynchronously.
-        guard let noCopy = AVAudioPCMBuffer(pcmFormat: format, bufferListNoCopy: bufferList, deallocator: nil),
-              let buffer = noCopy.copy() as? AVAudioPCMBuffer else { return }
+                              tapFormat: AVAudioFormat) {
+        let nBufs = Int(bufferList.pointee.mNumberBuffers)
+        let nCh   = Int(tapFormat.channelCount)
+
+        // ── Step 1: resolve actual delivery format ────────────────────────────
+        // kAudioTapPropertyFormat sometimes reports INTERLEAVED stereo (mBytesPerFrame=8)
+        // but the IOProc delivers as 2 separate non-interleaved channel buffers.
+        // AVAudioPCMBuffer(bufferListNoCopy:) computes frameLength = buf0.bytes / mBytesPerFrame,
+        // so the interleaving mismatch halves frameLength → 2× playback speed (chipmunk).
+        // Detect and correct: if format says interleaved but delivery has nBufs == channelCount,
+        // the data is actually non-interleaved — use an equivalent non-interleaved format.
+        let deliveryFormat: AVAudioFormat
+        if tapFormat.isInterleaved && nBufs == nCh && nCh > 1 {
+            deliveryFormat = AVAudioFormat(commonFormat: tapFormat.commonFormat,
+                                           sampleRate: tapFormat.sampleRate,
+                                           channels: tapFormat.channelCount,
+                                           interleaved: false) ?? tapFormat
+        } else {
+            deliveryFormat = tapFormat
+        }
+
+        // Log once to Console so we can verify what the tap is actually delivering.
+        if !_loggedFirstCallback {
+            _loggedFirstCallback = true
+            let b0bytes = Int(bufferList.pointee.mBuffers.mDataByteSize)
+            let b0ch    = Int(bufferList.pointee.mBuffers.mNumberChannels)
+            os_log("[SystemAudioTapEngine] IOProc first callback — nBufs=%d buf0.nCh=%d buf0.bytes=%d tapFmt: %.0fHz interleaved=%d bpf=%d → deliveryFmt: %.0fHz interleaved=%d bpf=%d",
+                   nBufs, b0ch, b0bytes,
+                   tapFormat.sampleRate, tapFormat.isInterleaved ? 1 : 0,
+                   tapFormat.streamDescription.pointee.mBytesPerFrame,
+                   deliveryFormat.sampleRate, deliveryFormat.isInterleaved ? 1 : 0,
+                   deliveryFormat.streamDescription.pointee.mBytesPerFrame)
+        }
+
+        // ── Step 2: wrap the IOProc buffer (no-copy) and own-copy it ─────────
+        guard let noCopy = AVAudioPCMBuffer(pcmFormat: deliveryFormat,
+                                            bufferListNoCopy: bufferList,
+                                            deallocator: nil),
+              let inputBuffer = noCopy.copy() as? AVAudioPCMBuffer,
+              inputBuffer.frameLength > 0 else { return }
+
+        // ── Step 3: lazy-create AVAudioConverter on first callback ────────────
+        // Converts tap-native format (any rate, any layout) → 48 kHz Float32
+        // non-interleaved stereo.  This handles ALL cases:
+        //   • Sample-rate mismatch (e.g. 96 kHz tap → 48 kHz WAV)
+        //   • Bit-depth mismatch (Int32 → Float32)
+        //   • Channel-count mismatch (mono → stereo upmix)
+        // Without this step, a tap at 96 kHz written into a 48 kHz WAV plays back
+        // at 2× speed (chipmunk) because AVAssetWriter does not resample raw PCM.
+        if audioConverter == nil {
+            let target = SystemAudioTapEngine.outputFormat
+            if let conv = AVAudioConverter(from: deliveryFormat, to: target) {
+                audioConverter = conv
+                os_log("[SystemAudioTapEngine] Converter created: %.0f Hz %d ch → %.0f Hz %d ch",
+                       deliveryFormat.sampleRate, deliveryFormat.channelCount,
+                       target.sampleRate, target.channelCount)
+            } else {
+                os_log("[SystemAudioTapEngine] AVAudioConverter init failed — passing raw buffer")
+            }
+        }
 
         let time = AVAudioTime(hostTime: timeStamp.pointee.mHostTime)
-        bufferHandler(buffer, time)
+
+        // ── Step 4: convert or pass through ──────────────────────────────────
+        if let converter = audioConverter {
+            // Allocate output buffer.  Scale frame count by the sample-rate ratio.
+            let rateRatio = SystemAudioTapEngine.outputFormat.sampleRate / deliveryFormat.sampleRate
+            let outCapacity = AVAudioFrameCount(Double(inputBuffer.frameLength) * rateRatio + 1.0)
+            guard let outBuffer = AVAudioPCMBuffer(pcmFormat: SystemAudioTapEngine.outputFormat,
+                                                   frameCapacity: outCapacity) else { return }
+
+            var convError: NSError?
+            var inputDone = false
+            let status = converter.convert(to: outBuffer, error: &convError) { _, outStatus in
+                if inputDone {
+                    outStatus.pointee = .noDataNow
+                    return nil
+                }
+                outStatus.pointee = .haveData
+                inputDone = true
+                return inputBuffer
+            }
+
+            if status == .error || outBuffer.frameLength == 0 {
+                if let e = convError {
+                    os_log("[SystemAudioTapEngine] Converter error: %{public}@", e.localizedDescription)
+                }
+                return
+            }
+            bufferHandler(outBuffer, time)
+        } else {
+            // Converter unavailable — pass through as-is (best-effort).
+            bufferHandler(inputBuffer, time)
+        }
     }
 }
 
