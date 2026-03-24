@@ -31,11 +31,13 @@ final class SingleTrackWriter {
     private let queue: DispatchQueue
     private let label: String
     private let outputSettings: [String: Any]
+    private let fileType: AVFileType
     private let nominalTimescale: CMTimeScale
 
-    init(label: String, outputSettings: [String: Any], nominalTimescale: CMTimeScale) {
+    init(label: String, outputSettings: [String: Any], fileType: AVFileType = .m4a, nominalTimescale: CMTimeScale) {
         self.label = label
         self.outputSettings = outputSettings
+        self.fileType = fileType
         self.nominalTimescale = nominalTimescale
         self.queue = DispatchQueue(label: "com.klarity.\(label)TrackQueue", qos: .userInitiated)
     }
@@ -51,20 +53,28 @@ final class SingleTrackWriter {
             try FileManager.default.removeItem(at: url)
         }
 
-        let writer = try AVAssetWriter(url: url, fileType: .m4a)
+        let writer = try AVAssetWriter(url: url, fileType: fileType)
         let input = AVAssetWriterInput(mediaType: .audio, outputSettings: outputSettings)
         input.expectsMediaDataInRealTime = true
 
         guard writer.canAdd(input) else {
+            let detail = "fileType=\(fileType.rawValue) settings=\(outputSettings)"
+            os_log("[%{public}@] canAdd(input) returned false. %{public}@", label, detail)
             throw NSError(domain: "SingleTrackWriter", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "[\(label)] AVAssetWriter cannot add audio input"])
+                          userInfo: [NSLocalizedDescriptionKey: "[\(label)] AVAssetWriter cannot add audio input — \(detail)"])
         }
         writer.add(input)
         writer.startWriting()
+        if writer.status == .failed {
+            let err = writer.error?.localizedDescription ?? "unknown"
+            os_log("[%{public}@] startWriting failed: %{public}@", label, err)
+            throw NSError(domain: "SingleTrackWriter", code: 2,
+                          userInfo: [NSLocalizedDescriptionKey: "[\(label)] startWriting failed: \(err)"])
+        }
 
         self.audioInput = input
         self.assetWriter = writer
-        os_log("[%{public}@] AVAssetWriter ready. URL: %{public}@", label, url.path)
+        os_log("[%{public}@] AVAssetWriter ready. fileType=%{public}@ URL: %{public}@", label, fileType.rawValue, url.path)
     }
 
     func write(buffer: CMSampleBuffer) {
@@ -78,8 +88,15 @@ final class SingleTrackWriter {
     private func drainPendingBuffers() {
         guard let input = audioInput else { return }
         while !pendingBuffers.isEmpty && input.isReadyForMoreMediaData {
-            let next = pendingBuffers.removeFirst()
-            writeSync(buffer: next)
+            // Peek before removing — if writeSync can't append (isReadyForMoreMediaData
+            // flipped between our check and AVFoundation's internal state), keep the
+            // buffer in the queue rather than silently discarding it.
+            let next = pendingBuffers[0]
+            if writeSync(buffer: next) {
+                pendingBuffers.removeFirst()
+            } else {
+                break
+            }
         }
     }
 
@@ -100,16 +117,21 @@ final class SingleTrackWriter {
                     if let url = self.outputURL {
                         try? FileManager.default.removeItem(at: url)
                     }
-                    let url = self.outputURL
                     self.resetState()
-                    _ = url // suppress unused warning
                     continuation.resume(returning: nil)
                     return
                 }
-                self.audioInput?.markAsFinished()
+                // Drain any frames buffered during transient backpressure.
+                // With PCM temp files this is always empty; kept as a safety net.
+                self.drainPendingBuffers()
+                self.pendingBuffers.removeAll()
+
                 let savedURL = self.outputURL
                 let hadData = self.hasReceivedData
                 let lbl = self.label
+
+                self.audioInput?.markAsFinished()
+                self.resetState()
                 writer.finishWriting {
                     if writer.status == .completed && hadData {
                         os_log("[%{public}@] finishWriting completed.", lbl)
@@ -124,24 +146,25 @@ final class SingleTrackWriter {
                         continuation.resume(returning: nil)
                     }
                 }
-                self.resetState()
             }
         }
     }
 
-    private func writeSync(buffer: CMSampleBuffer) {
+    /// Returns true if the buffer was successfully appended, false otherwise.
+    @discardableResult
+    private func writeSync(buffer: CMSampleBuffer) -> Bool {
         guard let writer = assetWriter, writer.status == .writing else {
             if assetWriter?.status == .failed {
                 os_log("[%{public}@] AVAssetWriter failed: %{public}@",
                        label, String(describing: assetWriter?.error))
             }
-            return
+            return false
         }
-        guard let input = audioInput, input.isReadyForMoreMediaData else { return }
-        guard CMSampleBufferIsValid(buffer) else { return }
+        guard let input = audioInput, input.isReadyForMoreMediaData else { return false }
+        guard CMSampleBufferIsValid(buffer) else { return false }
 
         let originalPTS = CMSampleBufferGetPresentationTimeStamp(buffer)
-        guard originalPTS.isValid else { return }
+        guard originalPTS.isValid else { return false }
 
         // Fix PTS collisions using the buffer's actual duration as the increment,
         // not 1 sample. Each audio buffer typically represents ~1024 samples (~21ms).
@@ -171,7 +194,7 @@ final class SingleTrackWriter {
             )
             guard st == noErr, let r = retimed else {
                 os_log("[%{public}@] Failed to retime buffer: %d", label, st)
-                return
+                return false
             }
             outputBuffer = r
         }
@@ -185,8 +208,10 @@ final class SingleTrackWriter {
         if input.append(outputBuffer) {
             lastPTS = pts
             hasReceivedData = true
+            return true
         } else {
             os_log("[%{public}@] append failed: %{public}@", label, String(describing: writer.error))
+            return false
         }
     }
 
@@ -219,28 +244,56 @@ final class DualTrackMixer {
     var hasStartedWriting: Bool { _hasStartedWriting }
 
     init() {
-        // SCStream delivers Float32, non-interleaved, 48kHz, stereo
+        // Write temp files as PCM WAV.
+        // WAV has no MOOV-atom rewrite overhead → isReadyForMoreMediaData is essentially
+        // always true → no encoder backpressure → no blank audio mid-recording.
+        // Final audio.m4a (AAC) is produced by AVAssetExportSession in composeTracks().
+        //
+        // AVChannelLayoutKey is required for PCM output settings; without it the
+        // AudioConverter cannot set up channel mapping and the AVAssetWriter fails silently.
+
+        var stereoLayout = AudioChannelLayout()
+        stereoLayout.mChannelLayoutTag = kAudioChannelLayoutTag_Stereo
+        let stereoLayoutData = Data(bytes: &stereoLayout, count: MemoryLayout<AudioChannelLayout>.size)
+
+        var monoLayout = AudioChannelLayout()
+        monoLayout.mChannelLayoutTag = kAudioChannelLayoutTag_Mono
+        let monoLayoutData = Data(bytes: &monoLayout, count: MemoryLayout<AudioChannelLayout>.size)
+
+        // SCStream delivers Float32 non-interleaved 48kHz stereo.
+        // WAV only supports integer LPCM through AVAssetWriter; use 16-bit interleaved.
+        // AudioConverter handles Float32 → Int16 and non-interleaved → interleaved.
         systemWriter = SingleTrackWriter(
             label: "system",
             outputSettings: [
-                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVFormatIDKey: kAudioFormatLinearPCM,
                 AVSampleRateKey: 48000.0,
                 AVNumberOfChannelsKey: 2,
-                AVEncoderBitRateKey: 128000
+                AVChannelLayoutKey: stereoLayoutData,
+                AVLinearPCMBitDepthKey: 16,
+                AVLinearPCMIsFloatKey: false,
+                AVLinearPCMIsBigEndianKey: false,
+                AVLinearPCMIsNonInterleaved: false
             ],
+            fileType: .wav,
             nominalTimescale: 48000
         )
-        // AVCaptureSession typically delivers PCM at 44100Hz or 48kHz, mono or stereo.
-        // Keeping output as mono AAC; AVAssetWriterInput's AudioConverter handles SRC.
+        // AVAudioEngine delivers Float32 PCM at hardware rate (typically 48kHz), mono or stereo.
+        // 16-bit mono 48kHz; AudioConverter handles SRC + stereo→mono mix-down if needed.
         micWriter = SingleTrackWriter(
             label: "mic",
             outputSettings: [
-                AVFormatIDKey: kAudioFormatMPEG4AAC,
-                AVSampleRateKey: 44100.0,
+                AVFormatIDKey: kAudioFormatLinearPCM,
+                AVSampleRateKey: 48000.0,
                 AVNumberOfChannelsKey: 1,
-                AVEncoderBitRateKey: 64000
+                AVChannelLayoutKey: monoLayoutData,
+                AVLinearPCMBitDepthKey: 16,
+                AVLinearPCMIsFloatKey: false,
+                AVLinearPCMIsBigEndianKey: false,
+                AVLinearPCMIsNonInterleaved: false
             ],
-            nominalTimescale: 44100
+            fileType: .wav,
+            nominalTimescale: 48000
         )
     }
 
@@ -250,8 +303,8 @@ final class DualTrackMixer {
 
         let uuid = UUID().uuidString
         let dir = url.deletingLastPathComponent()
-        let sysURL = dir.appendingPathComponent("system_tmp_\(uuid).m4a")
-        let micURL = dir.appendingPathComponent("mic_tmp_\(uuid).m4a")
+        let sysURL = dir.appendingPathComponent("system_tmp_\(uuid).wav")
+        let micURL = dir.appendingPathComponent("mic_tmp_\(uuid).wav")
 
         systemTmpURL = sysURL
         micTmpURL = micURL
@@ -510,18 +563,24 @@ final class VideoFileMixer {
 /// Manages local recording using ScreenCaptureKit and AVCaptureSession.
 /// Supports two modes: system-audio-only (audio.wav) and screen+audio (audio.wav + recording.mp4).
 @MainActor
-final class AudioRecorder: NSObject, ObservableObject, SCStreamOutput {
+final class AudioRecorder: NSObject, ObservableObject, SCStreamOutput, SCStreamDelegate {
     enum RecordingState {
         case idle, preparing, recording, paused
     }
 
     @Published private(set) var state: RecordingState = .idle
+    /// True while the dual-track mixer is finishing (finishWriting + AVAssetExportSession).
+    /// Distinct from `state == .idle` so the UI can show "Saving recording…" rather than a frozen spinner.
+    @Published private(set) var isExporting: Bool = false
     @Published var elapsedSeconds: Double = 0
     @Published var currentFilePath: URL?
     @Published var errorMessage: String?
 
     private var stream: SCStream?
     private var audioEngine: AVAudioEngine?
+    // Stored as AnyObject to avoid propagating @available to the class declaration.
+    // Holds a SystemAudioTapEngine instance when recording in systemAudioOnly mode on 14.2+.
+    private var tapEngine: AnyObject?
 
     private let mixer = DualTrackMixer()
     // Wrapped in a `let` container so nonisolated SCStream callbacks can access it
@@ -553,25 +612,32 @@ final class AudioRecorder: NSObject, ObservableObject, SCStreamOutput {
 
         Task {
             do {
-                // Step 1: Request Screen Recording permission
-                self.logger.info("Step 1: Requesting SCShareableContent...")
-                let content: SCShareableContent
-                do {
-                    content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
-                } catch {
-                    let e = "SCShareableContent failed: \(error.localizedDescription)"
-                    self.logger.error("\(e, privacy: .public)")
-                    self.errorMessage = e
-                    self.resetToIdle()
-                    return
+                // Step 1: Screen capture permission — only needed when SCStream is used.
+                // Core Audio tap (macOS 14.2+, audio-only mode) skips this entirely.
+                let display: SCDisplay?
+                if #available(macOS 14.2, *), mode == .systemAudioOnly {
+                    display = nil
+                    self.logger.info("Step 1: Skipped — using Core Audio tap (no screen capture needed)")
+                } else {
+                    self.logger.info("Step 1: Requesting SCShareableContent...")
+                    let content: SCShareableContent
+                    do {
+                        content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+                    } catch {
+                        let e = "SCShareableContent failed: \(error.localizedDescription)"
+                        self.logger.error("\(e, privacy: .public)")
+                        self.errorMessage = e
+                        self.resetToIdle()
+                        return
+                    }
+                    guard let d = content.displays.first else {
+                        self.errorMessage = "No display found for ScreenCaptureKit."
+                        self.resetToIdle()
+                        return
+                    }
+                    display = d
+                    self.logger.info("Step 1: OK — found \(content.displays.count, privacy: .public) displays")
                 }
-
-                guard let display = content.displays.first else {
-                    self.errorMessage = "No display found for ScreenCaptureKit."
-                    self.resetToIdle()
-                    return
-                }
-                self.logger.info("Step 1: OK — found \(content.displays.count, privacy: .public) displays")
 
                 // Step 2: Setup audio mixer
                 self.logger.info("Step 2: Setting up audio mixer...")
@@ -587,7 +653,7 @@ final class AudioRecorder: NSObject, ObservableObject, SCStreamOutput {
                 self.logger.info("Step 2: Audio mixer OK")
 
                 // Step 3: Setup video mixer (screen mode only)
-                if mode == .screenAndSystemAudio, let vURL = videoURL {
+                if mode == .screenAndSystemAudio, let vURL = videoURL, let display {
                     self.logger.info("Step 3: Setting up video mixer...")
                     let vm = VideoFileMixer()
                     do {
@@ -610,18 +676,38 @@ final class AudioRecorder: NSObject, ObservableObject, SCStreamOutput {
                 self.setupMicrophone()
                 self.logger.info("Step 4: Mic OK")
 
-                // Step 5: Setup SCStream
-                self.logger.info("Step 5: Setting up SCStream...")
-                do {
-                    try self.setupSystemAudio(display: display, mode: mode)
-                } catch {
-                    let e = "SCStream setup failed: \(error.localizedDescription)"
-                    self.logger.error("\(e, privacy: .public)")
-                    self.errorMessage = e
+                // Step 5: Setup system audio capture.
+                // On macOS 14.2+, audio-only mode uses the Core Audio tap API which does not
+                // have the SCStream silent dropout bug. All other modes fall back to SCStream.
+                if #available(macOS 14.2, *), mode == .systemAudioOnly {
+                    self.logger.info("Step 5: Setting up Core Audio tap...")
+                    do {
+                        try self.setupSystemAudioWithTap()
+                    } catch {
+                        let e = "Core Audio tap setup failed: \(error.localizedDescription)"
+                        self.logger.error("\(e, privacy: .public)")
+                        self.errorMessage = e
+                        self.resetToIdle()
+                        return
+                    }
+                    self.logger.info("Step 5: Core Audio tap OK")
+                } else if let display {
+                    self.logger.info("Step 5: Setting up SCStream...")
+                    do {
+                        try self.setupSystemAudio(display: display, mode: mode)
+                    } catch {
+                        let e = "SCStream setup failed: \(error.localizedDescription)"
+                        self.logger.error("\(e, privacy: .public)")
+                        self.errorMessage = e
+                        self.resetToIdle()
+                        return
+                    }
+                    self.logger.info("Step 5: SCStream OK")
+                } else {
+                    self.errorMessage = "No display available for system audio capture."
                     self.resetToIdle()
                     return
                 }
-                self.logger.info("Step 5: SCStream OK")
 
                 // Step 6: Start capture — this can take 15-20 seconds with Bluetooth audio
                 do {
@@ -696,7 +782,11 @@ final class AudioRecorder: NSObject, ObservableObject, SCStreamOutput {
         audioEngine?.inputNode.removeTap(onBus: 0)
         audioEngine?.stop()
 
-        // Stop SCStream next
+        // Stop system audio capture (tap or SCStream, whichever was used)
+        if #available(macOS 14.2, *), let engine = tapEngine as? SystemAudioTapEngine {
+            engine.stop()
+            tapEngine = nil
+        }
         do {
             try await stream?.stopCapture()
         } catch {
@@ -705,10 +795,12 @@ final class AudioRecorder: NSObject, ObservableObject, SCStreamOutput {
 
         let successfullyCapturedData = mixer.hasStartedWriting
 
+        isExporting = true
         await mixer.finish()
         await videoMixerRef.current?.finish()
         videoMixerRef.current = nil
-        
+        isExporting = false
+
         // Wipe hardware locks
         cleanup()
 
@@ -746,6 +838,19 @@ final class AudioRecorder: NSObject, ObservableObject, SCStreamOutput {
         audioEngine = engine
     }
 
+    @available(macOS 14.2, *)
+    private func setupSystemAudioWithTap() throws {
+        let mixerRef = self.mixer
+        let videoRef = self.videoMixerRef
+        let engine = SystemAudioTapEngine { pcmBuffer, audioTime in
+            guard let sb = makeCMSampleBuffer(from: pcmBuffer, at: audioTime) else { return }
+            mixerRef.writeSystemAudio(buffer: sb)
+            videoRef.current?.writeAudio(buffer: sb)
+        }
+        try engine.start()
+        tapEngine = engine
+    }
+
     private func setupSystemAudio(display: SCDisplay, mode: RecordingMode) throws {
         let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
         let config = SCStreamConfiguration()
@@ -759,13 +864,12 @@ final class AudioRecorder: NSObject, ObservableObject, SCStreamOutput {
             config.minimumFrameInterval = CMTime(value: 1, timescale: 30)
         }
 
-        stream = SCStream(filter: filter, configuration: config, delegate: nil)
+        stream = SCStream(filter: filter, configuration: config, delegate: self)
         try stream?.addStreamOutput(self, type: .audio,
-                                    sampleHandlerQueue: DispatchQueue(label: "com.klarity.sysAudioQueue"))
-
+                                    sampleHandlerQueue: DispatchQueue(label: "com.klarity.sysAudioQueue", qos: .userInitiated))
         if mode == .screenAndSystemAudio {
             try stream?.addStreamOutput(self, type: .screen,
-                                        sampleHandlerQueue: DispatchQueue(label: "com.klarity.screenQueue"))
+                                        sampleHandlerQueue: DispatchQueue(label: "com.klarity.screenQueue", qos: .userInitiated))
         }
     }
 
@@ -774,13 +878,24 @@ final class AudioRecorder: NSObject, ObservableObject, SCStreamOutput {
     nonisolated func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         switch type {
         case .audio:
-            os_log("[AudioRecorder] SCStream audio buffer received")
             mixer.writeSystemAudio(buffer: sampleBuffer)
             videoMixerRef.current?.writeAudio(buffer: sampleBuffer)
         case .screen:
             videoMixerRef.current?.writeVideo(buffer: sampleBuffer)
         default:
             break
+        }
+    }
+
+    nonisolated func stream(_ stream: SCStream, didStopWithError error: Error) {
+        // Sonoma has a bug where this delegate is called with a nil error (ObjC nil bridged to
+        // Swift Error). Using string interpolation is safe even with unexpected error objects.
+        let msg = "\(error)"
+        os_log("[AudioRecorder] SCStream stopped unexpectedly: %{public}@", msg)
+        Task { @MainActor [weak self] in
+            guard let self,
+                  self.controlState == .recording || self.controlState == .paused else { return }
+            self.errorMessage = "System audio capture stopped: \(msg). Stop and restart the recording."
         }
     }
 
@@ -798,12 +913,17 @@ final class AudioRecorder: NSObject, ObservableObject, SCStreamOutput {
     }
 
     private func cleanup() {
+        if #available(macOS 14.2, *), let engine = tapEngine as? SystemAudioTapEngine {
+            engine.stop()
+            tapEngine = nil
+        }
+
         if let stream = stream {
             try? stream.removeStreamOutput(self, type: .audio)
             try? stream.removeStreamOutput(self, type: .screen)
         }
         stream = nil
-        
+
         audioEngine?.inputNode.removeTap(onBus: 0)
         audioEngine?.stop()
         audioEngine = nil

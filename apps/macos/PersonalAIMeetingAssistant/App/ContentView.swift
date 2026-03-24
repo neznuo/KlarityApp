@@ -77,7 +77,7 @@ struct ContentView: View {
 
     private var isActivelyRecording: Bool {
         recordingVM.isRecording || recordingVM.isPaused ||
-        recordingVM.isPreparing || recordingVM.isStopping
+        recordingVM.isPreparing || recordingVM.isStopping || recordingVM.isExporting
     }
 
     var body: some View {
@@ -212,7 +212,18 @@ struct RecordingStatusPill: View {
             divider
 
             // ⏸ Pause / Resume ────────────────────────────────────────────────
-            if vm.isPreparing || vm.isStopping {
+            if vm.isExporting {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .scaleEffect(0.55)
+                        .frame(width: 16, height: 16)
+                    Text("Saving…")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(AppTheme.Colors.secondaryText)
+                }
+                .frame(height: 36)
+                .padding(.horizontal, 8)
+            } else if vm.isPreparing || vm.isStopping {
                 ProgressView()
                     .scaleEffect(0.65)
                     .frame(width: 36, height: 36)

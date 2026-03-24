@@ -97,7 +97,7 @@ struct MenuBarContentView: View {
 
     private var isActivelyRecording: Bool {
         recordingVM.isRecording || recordingVM.isPaused ||
-        recordingVM.isPreparing || recordingVM.isStopping
+        recordingVM.isPreparing || recordingVM.isStopping || recordingVM.isExporting
     }
 
     var body: some View {
@@ -228,7 +228,13 @@ struct MenuBarRecordingSection: View {
 
                 Rectangle().fill(AppTheme.Colors.border).frame(width: 1, height: 18).padding(.horizontal, 4)
 
-                if vm.isPreparing || vm.isStopping {
+                if vm.isExporting {
+                    HStack(spacing: 4) {
+                        ProgressView().scaleEffect(0.55).frame(width: 16, height: 16)
+                        Text("Saving…").font(.system(size: 10, weight: .medium)).foregroundStyle(AppTheme.Colors.secondaryText)
+                    }
+                    .frame(height: 32).padding(.horizontal, 6)
+                } else if vm.isPreparing || vm.isStopping {
                     ProgressView().scaleEffect(0.6).frame(width: 32, height: 32)
                 } else {
                     Button {

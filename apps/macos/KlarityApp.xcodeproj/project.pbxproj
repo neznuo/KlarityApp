@@ -18,6 +18,7 @@
 		6E5550BB0F674149C92E45FF /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B048DC8530A0E0015006EE49 /* APIClient.swift */; };
 		7256AA73C3D692522B9AB684 /* RecordingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0916DF495276ED78316C1240 /* RecordingView.swift */; };
 		7886CD1867401D6C3F9375CC /* AudioRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = B21284A2653E2777A4D408C0 /* AudioRecorder.swift */; };
+		43FA5FED5B9446DB8051B78E /* SystemAudioTapEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79E51A1C09A447A4A7BDBA67 /* SystemAudioTapEngine.swift */; };
 		7BCB007A91D5DBD7C33CE8C2 /* AppTerminationHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2260F73EBD122FDB72D49F95 /* AppTerminationHandler.swift */; };
 		81F7A73700626A8109757E25 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D4AD9E461EA80D8A4B7D579 /* Models.swift */; };
 		87913C66E9EF51E44126F03F /* AudioPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5558C1B35A861E3856E28694 /* AudioPlayerView.swift */; };
@@ -53,6 +54,7 @@
 		AE6B46DD9BCDF2336923D1C5 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		B048DC8530A0E0015006EE49 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
 		B21284A2653E2777A4D408C0 /* AudioRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRecorder.swift; sourceTree = "<group>"; };
+		79E51A1C09A447A4A7BDBA67 /* SystemAudioTapEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemAudioTapEngine.swift; sourceTree = "<group>"; };
 		CB8A27630A160812A4FA6C8F /* KlarityApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KlarityApp.swift; sourceTree = "<group>"; };
 		DCE9450AD3F25B91E869969B /* BackendProcessManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackendProcessManager.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -201,6 +203,7 @@
 			children = (
 				B048DC8530A0E0015006EE49 /* APIClient.swift */,
 				B21284A2653E2777A4D408C0 /* AudioRecorder.swift */,
+				79E51A1C09A447A4A7BDBA67 /* SystemAudioTapEngine.swift */,
 				DCE9450AD3F25B91E869969B /* BackendProcessManager.swift */,
 				E1D2C3B4A596877869504001 /* CalendarService.swift */,
 				7DBA6CC50E26967DDDAFA002 /* KeychainService.swift */,
@@ -306,6 +309,7 @@
 				F1E2D3C4B5A697886950A001 /* CalendarService.swift in Sources */,
 				87913C66E9EF51E44126F03F /* AudioPlayerView.swift in Sources */,
 				7886CD1867401D6C3F9375CC /* AudioRecorder.swift in Sources */,
+				43FA5FED5B9446DB8051B78E /* SystemAudioTapEngine.swift in Sources */,
 				0C285D719C56C1678D0E89F0 /* BackendProcessManager.swift in Sources */,
 				1A77890590D00F67DF14CB89 /* ContentView.swift in Sources */,
 				11899CFC8D58E4397765BC23 /* HomeView.swift in Sources */,

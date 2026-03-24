@@ -120,9 +120,10 @@ final class RecordingViewModel: ObservableObject {
             .sink { [weak self] _ in self?.objectWillChange.send() }
     }
 
-    var isRecording: Bool { recorder.state == .recording }
-    var isPaused:    Bool { recorder.state == .paused }
-    var isPreparing: Bool { recorder.state == .preparing }
+    var isRecording:  Bool { recorder.state == .recording }
+    var isPaused:     Bool { recorder.state == .paused }
+    var isPreparing:  Bool { recorder.state == .preparing }
+    var isExporting:  Bool { recorder.isExporting }
 
     func startNewMeeting(calendarEventId: String? = nil, calendarSource: String? = nil) async {
         guard !meetingTitle.trimmingCharacters(in: .whitespaces).isEmpty else {
@@ -161,10 +162,13 @@ final class RecordingViewModel: ObservableObject {
         guard let meeting = currentMeeting else { return }
         guard !isStopping else { return }
         isStopping = true
-        defer { isStopping = false }
 
         let capturedDuration = recorder.elapsedSeconds > 0 ? recorder.elapsedSeconds : nil
+        // stopRecording() stops capture immediately then exports (slow). Release isStopping
+        // once capture has stopped so the pill switches to "Saving…" mode instead of keeping
+        // the recorder controls frozen.
         let fileURL = await recorder.stopRecording()
+        isStopping = false
 
         do {
             let result: Meeting
