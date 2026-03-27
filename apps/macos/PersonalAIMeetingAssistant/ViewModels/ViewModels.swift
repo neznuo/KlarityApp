@@ -101,7 +101,6 @@ final class HomeViewModel: ObservableObject {
 @MainActor
 final class RecordingViewModel: ObservableObject {
     @Published var meetingTitle: String = ""
-    @Published var recordingMode: RecordingMode = .systemAudioOnly
     @Published var currentMeeting: Meeting?
     @Published var isCreating = false
     @Published var isStopping = false
@@ -142,8 +141,7 @@ final class RecordingViewModel: ObservableObject {
             )
             currentMeeting = meeting
             let audioURL = audioOutputURL(for: meeting.id)
-            let videoURL = recordingMode == .screenAndSystemAudio ? videoOutputURL(for: meeting.id) : nil
-            recorder.startRecording(to: audioURL, videoURL: videoURL, mode: recordingMode)
+            recorder.startRecording(to: audioURL)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -198,11 +196,7 @@ final class RecordingViewModel: ObservableObject {
     }
 
     private func audioOutputURL(for meetingId: String) -> URL {
-        meetingDir(for: meetingId).appendingPathComponent("audio.m4a")
-    }
-
-    private func videoOutputURL(for meetingId: String) -> URL {
-        meetingDir(for: meetingId).appendingPathComponent("recording.mp4")
+        meetingDir(for: meetingId).appendingPathComponent("audio.wav")
     }
 }
 
