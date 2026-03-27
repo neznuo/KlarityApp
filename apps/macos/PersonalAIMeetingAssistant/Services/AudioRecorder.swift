@@ -70,6 +70,11 @@ final class AudioRecorder: NSObject, ObservableObject {
         errorMessage = nil
         guard controlState == .idle, !isPreparingCapture else { return }
 
+        guard #available(macOS 14.2, *) else {
+            errorMessage = "Meeting recording requires macOS 14.2 (Sonoma) or later. Please update your Mac."
+            return
+        }
+
         state = .preparing
         isPreparingCapture = true
         currentFilePath = audioURL
@@ -148,6 +153,7 @@ final class AudioRecorder: NSObject, ObservableObject {
 
     // MARK: - Setup
 
+    @available(macOS 14.2, *)
     private func setupAndStart(audioURL: URL) async throws {
         // Clean up any aggregate device left over from a previous crash
         destroyLeftoverAggregateDevice()
@@ -322,7 +328,9 @@ final class AudioRecorder: NSObject, ObservableObject {
             aggregateDeviceID = AudioDeviceID(kAudioObjectUnknown)
         }
         if tapID != AudioObjectID(kAudioObjectUnknown) {
-            AudioHardwareDestroyProcessTap(tapID)
+            if #available(macOS 14.2, *) {
+                AudioHardwareDestroyProcessTap(tapID)
+            }
             tapID = AudioObjectID(kAudioObjectUnknown)
         }
         audioConverter = nil
@@ -365,6 +373,7 @@ final class AudioRecorder: NSObject, ObservableObject {
 
     /// Finds and destroys any aggregate device left behind by a previous crash.
     /// Called at the start of every recording session.
+    @available(macOS 14.2, *)
     private func destroyLeftoverAggregateDevice() {
         var addr = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDevices,
