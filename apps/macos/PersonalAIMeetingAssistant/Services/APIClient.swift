@@ -9,7 +9,7 @@ final class APIClient {
     private let session: URLSession
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
-    private let logger = Logger(subsystem: "com.klarity.meeting-assistant", category: "APIClient")
+    private let logger = AppLogger(category: "APIClient")
 
     private init(baseURL: String = "http://127.0.0.1:8765") {
         self.baseURL = baseURL

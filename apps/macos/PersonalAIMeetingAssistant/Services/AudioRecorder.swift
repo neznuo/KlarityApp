@@ -1,505 +1,35 @@
-import AVFoundation
-import ScreenCaptureKit
+@preconcurrency import AVFoundation
+import CoreAudio
 import Foundation
-import CoreMedia
 import os.log
 
-// MARK: - Recording Mode
-
-enum RecordingMode: String, CaseIterable, Identifiable {
-    case systemAudioOnly      = "System Audio Only"
-    case screenAndSystemAudio = "Screen & System Audio"
-    var id: String { rawValue }
-}
-
-// MARK: - SingleTrackWriter
-
-/// Writes CMSampleBuffers from exactly ONE audio source to a single .m4a file.
-/// By accepting only one source format, the AAC encoder's AudioConverter is
-/// initialized once and never sees a mismatched CMAudioFormatDescription.
-final class SingleTrackWriter {
-    private var assetWriter: AVAssetWriter?
-    private var audioInput: AVAssetWriterInput?
-    private var isSessionStarted = false
-    private var isPaused = false
-    private var lastPTS: CMTime = .invalid
-    private var outputURL: URL?
-
-    private(set) var hasReceivedData = false
-
-    private let queue: DispatchQueue
-    private let label: String
-    private let outputSettings: [String: Any]
-    private let nominalTimescale: CMTimeScale
-
-    init(label: String, outputSettings: [String: Any], nominalTimescale: CMTimeScale) {
-        self.label = label
-        self.outputSettings = outputSettings
-        self.nominalTimescale = nominalTimescale
-        self.queue = DispatchQueue(label: "com.klarity.\(label)TrackQueue", qos: .userInitiated)
-    }
-
-    func setup(url: URL) throws {
-        outputURL = url
-        isSessionStarted = false
-        hasReceivedData = false
-        isPaused = false
-        lastPTS = .invalid
-
-        if FileManager.default.fileExists(atPath: url.path) {
-            try FileManager.default.removeItem(at: url)
-        }
-
-        let writer = try AVAssetWriter(url: url, fileType: .m4a)
-        let input = AVAssetWriterInput(mediaType: .audio, outputSettings: outputSettings)
-        input.expectsMediaDataInRealTime = true
-
-        guard writer.canAdd(input) else {
-            throw NSError(domain: "SingleTrackWriter", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "[\(label)] AVAssetWriter cannot add audio input"])
-        }
-        writer.add(input)
-        writer.startWriting()
-
-        self.audioInput = input
-        self.assetWriter = writer
-        os_log("[%{public}@] AVAssetWriter ready. URL: %{public}@", label, url.path)
-    }
-
-    func write(buffer: CMSampleBuffer) {
-        queue.async { [weak self] in
-            guard let self = self, !self.isPaused else { return }
-            self.writeSync(buffer: buffer)
-        }
-    }
-
-    func setPaused(_ paused: Bool) {
-        queue.async { [weak self] in self?.isPaused = paused }
-    }
-
-    /// Finishes writing and returns the output URL on success, nil if no data was written.
-    func finish() async -> URL? {
-        return await withCheckedContinuation { continuation in
-            queue.async { [weak self] in
-                guard let self = self, let writer = self.assetWriter else {
-                    continuation.resume(returning: nil)
-                    return
-                }
-                guard self.isSessionStarted && writer.status == .writing else {
-                    writer.cancelWriting()
-                    if let url = self.outputURL {
-                        try? FileManager.default.removeItem(at: url)
-                    }
-                    let url = self.outputURL
-                    self.resetState()
-                    _ = url // suppress unused warning
-                    continuation.resume(returning: nil)
-                    return
-                }
-                self.audioInput?.markAsFinished()
-                let savedURL = self.outputURL
-                let hadData = self.hasReceivedData
-                let lbl = self.label
-                writer.finishWriting {
-                    if writer.status == .completed && hadData {
-                        os_log("[%{public}@] finishWriting completed.", lbl)
-                        continuation.resume(returning: savedURL)
-                    } else {
-                        os_log("[%{public}@] finishWriting failed (status=%d): %{public}@",
-                               lbl, writer.status.rawValue,
-                               String(describing: writer.error))
-                        if let url = savedURL {
-                            try? FileManager.default.removeItem(at: url)
-                        }
-                        continuation.resume(returning: nil)
-                    }
-                }
-                self.resetState()
-            }
-        }
-    }
-
-    private func writeSync(buffer: CMSampleBuffer) {
-        guard let writer = assetWriter, writer.status == .writing else {
-            if assetWriter?.status == .failed {
-                os_log("[%{public}@] AVAssetWriter failed: %{public}@",
-                       label, String(describing: assetWriter?.error))
-            }
-            return
-        }
-        guard let input = audioInput, input.isReadyForMoreMediaData else { return }
-        guard CMSampleBufferIsValid(buffer) else { return }
-
-        let originalPTS = CMSampleBufferGetPresentationTimeStamp(buffer)
-        guard originalPTS.isValid else { return }
-
-        // Fix PTS collisions using the buffer's actual duration as the increment,
-        // not 1 sample. Each audio buffer typically represents ~1024 samples (~21ms).
-        var pts = originalPTS
-        if lastPTS.isValid && CMTimeCompare(pts, lastPTS) <= 0 {
-            let dur = CMSampleBufferGetDuration(buffer)
-            let inc = (dur.isValid && dur > .zero)
-                ? dur
-                : CMTime(value: CMTimeValue(1024), timescale: nominalTimescale)
-            pts = CMTimeAdd(lastPTS, inc)
-        }
-
-        var outputBuffer = buffer
-        if CMTimeCompare(pts, originalPTS) != 0 {
-            var timing = CMSampleTimingInfo(
-                duration: CMSampleBufferGetDuration(buffer),
-                presentationTimeStamp: pts,
-                decodeTimeStamp: .invalid
-            )
-            var retimed: CMSampleBuffer?
-            let st = CMSampleBufferCreateCopyWithNewTiming(
-                allocator: kCFAllocatorDefault,
-                sampleBuffer: buffer,
-                sampleTimingEntryCount: 1,
-                sampleTimingArray: &timing,
-                sampleBufferOut: &retimed
-            )
-            guard st == noErr, let r = retimed else {
-                os_log("[%{public}@] Failed to retime buffer: %d", label, st)
-                return
-            }
-            outputBuffer = r
-        }
-
-        if !isSessionStarted {
-            writer.startSession(atSourceTime: pts)
-            isSessionStarted = true
-            os_log("[%{public}@] Session started at %.3fs", label, pts.seconds)
-        }
-
-        if input.append(outputBuffer) {
-            lastPTS = pts
-            hasReceivedData = true
-        } else {
-            os_log("[%{public}@] append failed: %{public}@", label, String(describing: writer.error))
-        }
-    }
-
-    private func resetState() {
-        assetWriter = nil
-        audioInput = nil
-        isSessionStarted = false
-        hasReceivedData = false
-        lastPTS = .invalid
-        outputURL = nil
-    }
-}
-
-// MARK: - DualTrackMixer
-
-/// Coordinates two SingleTrackWriter instances — one for system audio, one for mic audio.
-/// On finish(), mixes both tracks into a single m4a using AVMutableComposition + AVAssetExportSession.
-/// This avoids the format-mismatch corruption caused by writing two incompatible CMSampleBuffer
-/// streams (SCStream Float32/non-interleaved vs. AVCapture PCM) into a single AVAssetWriterInput.
-final class DualTrackMixer {
-    private let systemWriter: SingleTrackWriter
-    private let micWriter: SingleTrackWriter
-
-    private var finalOutputURL: URL?
-    private var systemTmpURL: URL?
-    private var micTmpURL: URL?
-
-    private var _hasStartedWriting = false
-    var hasStartedWriting: Bool { _hasStartedWriting }
-
-    init() {
-        // SCStream delivers Float32, non-interleaved, 48kHz, stereo
-        systemWriter = SingleTrackWriter(
-            label: "system",
-            outputSettings: [
-                AVFormatIDKey: kAudioFormatMPEG4AAC,
-                AVSampleRateKey: 48000.0,
-                AVNumberOfChannelsKey: 2,
-                AVEncoderBitRateKey: 128000
-            ],
-            nominalTimescale: 48000
-        )
-        // AVCaptureSession typically delivers PCM at 44100Hz or 48kHz, mono or stereo.
-        // Keeping output as mono AAC; AVAssetWriterInput's AudioConverter handles SRC.
-        micWriter = SingleTrackWriter(
-            label: "mic",
-            outputSettings: [
-                AVFormatIDKey: kAudioFormatMPEG4AAC,
-                AVSampleRateKey: 44100.0,
-                AVNumberOfChannelsKey: 1,
-                AVEncoderBitRateKey: 64000
-            ],
-            nominalTimescale: 44100
-        )
-    }
-
-    func setup(url: URL) throws {
-        finalOutputURL = url
-        _hasStartedWriting = false
-
-        let uuid = UUID().uuidString
-        let dir = url.deletingLastPathComponent()
-        let sysURL = dir.appendingPathComponent("system_tmp_\(uuid).m4a")
-        let micURL = dir.appendingPathComponent("mic_tmp_\(uuid).m4a")
-
-        systemTmpURL = sysURL
-        micTmpURL = micURL
-
-        try systemWriter.setup(url: sysURL)
-        do {
-            try micWriter.setup(url: micURL)
-        } catch {
-            // System writer already started — clean it up before rethrowing
-            Task { _ = await systemWriter.finish() }
-            throw error
-        }
-    }
-
-    func writeSystemAudio(buffer: CMSampleBuffer) {
-        _hasStartedWriting = true   // system audio is the primary source
-        systemWriter.write(buffer: buffer)
-    }
-
-    func writeMicAudio(buffer: CMSampleBuffer) {
-        micWriter.write(buffer: buffer)
-    }
-
-    func setPaused(_ paused: Bool) {
-        systemWriter.setPaused(paused)
-        micWriter.setPaused(paused)
-    }
-
-    func finish() async {
-        // Drain both writers in parallel
-        async let sysFinish = systemWriter.finish()
-        async let micFinish = micWriter.finish()
-        let (sysURL, micURL) = await (sysFinish, micFinish)
-
-        defer {
-            finalOutputURL = nil
-            systemTmpURL = nil
-            micTmpURL = nil
-        }
-
-        guard let finalURL = finalOutputURL else { return }
-
-        if let sysURL = sysURL, let micURL = micURL {
-            await composeTracks(systemURL: sysURL, micURL: micURL, outputURL: finalURL)
-        } else if let sysURL = sysURL {
-            os_log("[DualTrackMixer] Mic had no data; using system-audio-only output.")
-            moveFile(from: sysURL, to: finalURL)
-            if let micURL = micURL { try? FileManager.default.removeItem(at: micURL) }
-        } else {
-            os_log("[DualTrackMixer-Error] Both writers produced no output.")
-            if let micURL = micURL { try? FileManager.default.removeItem(at: micURL) }
-        }
-    }
-
-    private func composeTracks(systemURL: URL, micURL: URL, outputURL: URL) async {
-        let sysAsset = AVURLAsset(url: systemURL)
-        let micAsset = AVURLAsset(url: micURL)
-
-        let sysDuration: CMTime
-        let micDuration: CMTime
-        do {
-            sysDuration = try await sysAsset.load(.duration)
-            micDuration = try await micAsset.load(.duration)
-        } catch {
-            os_log("[DualTrackMixer-Error] Failed to load asset durations: %{public}@",
-                   error.localizedDescription)
-            moveFile(from: systemURL, to: outputURL)
-            try? FileManager.default.removeItem(at: micURL)
-            return
-        }
-
-        let composition = AVMutableComposition()
-        guard let sysTrack = composition.addMutableTrack(withMediaType: .audio,
-                                                         preferredTrackID: kCMPersistentTrackID_Invalid),
-              let micTrack = composition.addMutableTrack(withMediaType: .audio,
-                                                         preferredTrackID: kCMPersistentTrackID_Invalid)
-        else {
-            os_log("[DualTrackMixer-Error] Could not add composition tracks.")
-            moveFile(from: systemURL, to: outputURL)
-            try? FileManager.default.removeItem(at: micURL)
-            return
-        }
-
-        do {
-            let sysSources = try await sysAsset.loadTracks(withMediaType: .audio)
-            let micSources = try await micAsset.loadTracks(withMediaType: .audio)
-            guard let sysSource = sysSources.first, let micSource = micSources.first else {
-                throw NSError(domain: "DualTrackMixer", code: 2,
-                              userInfo: [NSLocalizedDescriptionKey: "Missing audio tracks in temp assets"])
-            }
-            try sysTrack.insertTimeRange(CMTimeRange(start: .zero, duration: sysDuration),
-                                         of: sysSource, at: .zero)
-            try micTrack.insertTimeRange(CMTimeRange(start: .zero, duration: micDuration),
-                                         of: micSource, at: .zero)
-        } catch {
-            os_log("[DualTrackMixer-Error] Composition build failed: %{public}@",
-                   error.localizedDescription)
-            moveFile(from: systemURL, to: outputURL)
-            try? FileManager.default.removeItem(at: micURL)
-            return
-        }
-
-        if FileManager.default.fileExists(atPath: outputURL.path) {
-            try? FileManager.default.removeItem(at: outputURL)
-        }
-
-        guard let session = AVAssetExportSession(asset: composition,
-                                                 presetName: AVAssetExportPresetAppleM4A) else {
-            os_log("[DualTrackMixer-Error] Could not create AVAssetExportSession.")
-            moveFile(from: systemURL, to: outputURL)
-            try? FileManager.default.removeItem(at: micURL)
-            return
-        }
-
-        session.outputURL = outputURL
-        session.outputFileType = .m4a
-
-        await session.export()
-
-        if session.status == .completed {
-            os_log("[DualTrackMixer] Export completed: %{public}@", outputURL.path)
-        } else {
-            os_log("[DualTrackMixer-Error] Export failed (status=%d): %{public}@",
-                   session.status.rawValue,
-                   session.error?.localizedDescription ?? "unknown")
-            moveFile(from: systemURL, to: outputURL)
-        }
-
-        try? FileManager.default.removeItem(at: systemURL)
-        try? FileManager.default.removeItem(at: micURL)
-    }
-
-    private func moveFile(from source: URL, to destination: URL) {
-        do {
-            if FileManager.default.fileExists(atPath: destination.path) {
-                try FileManager.default.removeItem(at: destination)
-            }
-            try FileManager.default.moveItem(at: source, to: destination)
-        } catch {
-            os_log("[DualTrackMixer-Error] moveFile failed: %{public}@", error.localizedDescription)
-        }
-    }
-}
-
-// MARK: - VideoFileMixer
-
-/// Thread-safe writer for the screen + audio output (recording.mp4).
-/// Only used in `.screenAndSystemAudio` mode.
-final class VideoFileMixer {
-    private var assetWriter: AVAssetWriter?
-    private var videoInput: AVAssetWriterInput?
-    private var audioInput: AVAssetWriterInput?
-    private var isWriterStarted = false
-    private let queue = DispatchQueue(label: "com.klarity.videoMixerRef.currentQueue")
-
-    func setup(url: URL, displayWidth: Int, displayHeight: Int) throws {
-        if FileManager.default.fileExists(atPath: url.path) {
-            try FileManager.default.removeItem(at: url)
-        }
-
-        assetWriter = try AVAssetWriter(url: url, fileType: .mp4)
-
-        let videoSettings: [String: Any] = [
-            AVVideoCodecKey: AVVideoCodecType.h264,
-            AVVideoWidthKey: displayWidth,
-            AVVideoHeightKey: displayHeight,
-            AVVideoCompressionPropertiesKey: [
-                AVVideoAverageBitRateKey: 4_000_000,
-                AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel
-            ]
-        ]
-
-        videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
-        videoInput?.expectsMediaDataInRealTime = true
-        if let vi = videoInput, assetWriter!.canAdd(vi) {
-            assetWriter!.add(vi)
-        }
-
-        var channelLayout = AudioChannelLayout()
-        channelLayout.mChannelLayoutTag = kAudioChannelLayoutTag_Stereo
-        let channelLayoutData = Data(bytes: &channelLayout, count: MemoryLayout<AudioChannelLayout>.size)
-
-        let audioSettings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatLinearPCM,
-            AVSampleRateKey: 48000.0,
-            AVNumberOfChannelsKey: 2,
-            AVChannelLayoutKey: channelLayoutData,
-            AVLinearPCMBitDepthKey: 32,
-            AVLinearPCMIsFloatKey: true,
-            AVLinearPCMIsNonInterleaved: true,
-            AVLinearPCMIsBigEndianKey: false
-        ]
-
-        audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
-        audioInput?.expectsMediaDataInRealTime = true
-        if let ai = audioInput, assetWriter!.canAdd(ai) {
-            assetWriter!.add(ai)
-        }
-
-        assetWriter?.startWriting()
-    }
-
-    func writeVideo(buffer: CMSampleBuffer) {
-        queue.async { [weak self] in self?.write(buffer: buffer, to: self?.videoInput) }
-    }
-
-    func writeAudio(buffer: CMSampleBuffer) {
-        queue.async { [weak self] in self?.write(buffer: buffer, to: self?.audioInput) }
-    }
-
-    private func write(buffer: CMSampleBuffer, to input: AVAssetWriterInput?) {
-        guard let writer = assetWriter, writer.status == .writing,
-              let input = input, input.isReadyForMoreMediaData else { return }
-
-        if !isWriterStarted {
-            let presentationTime = CMSampleBufferGetPresentationTimeStamp(buffer)
-            if presentationTime.isValid {
-                writer.startSession(atSourceTime: presentationTime)
-                isWriterStarted = true
-            }
-        }
-
-        if isWriterStarted {
-            input.append(buffer)
-        }
-    }
-
-    func finish() async {
-        await withCheckedContinuation { continuation in
-            queue.async { [weak self] in
-                guard let self = self, let writer = self.assetWriter else {
-                    continuation.resume()
-                    return
-                }
-
-                if self.isWriterStarted && writer.status == .writing {
-                    self.videoInput?.markAsFinished()
-                    self.audioInput?.markAsFinished()
-                    writer.finishWriting { continuation.resume() }
-                } else {
-                    writer.cancelWriting()
-                    continuation.resume()
-                }
-
-                self.assetWriter = nil
-                self.videoInput = nil
-                self.audioInput = nil
-                self.isWriterStarted = false
-            }
-        }
-    }
-}
-
 // MARK: - AudioRecorder
+//
+// Architecture: two independent capture paths → two temp WAV files → streamed mix → audio.wav
+//
+//   PATH 1 — System audio:
+//     CATapDescription (all output, unmuted)
+//     → aggregate device (output device + tap)
+//     → IOProc → manual mono mix → 16kHz int16 → audio_sys_tmp.wav
+//
+//   PATH 2 — Microphone:
+//     AVAudioEngine.inputNode tap
+//     → AVAudioConverter → 16kHz int16 → audio_mic_tmp.wav
+//
+//   POST-STOP — Streaming mix (no FFmpeg needed):
+//     chunk-by-chunk float32 average of both WAV files → audio.wav
+//     temp files deleted
+//
+// Why two paths instead of a single aggregate?
+// When the aggregate device's main sub-device is an output device (required so the tap
+// has a valid clock), macOS does not surface mic input buffers in the IOProc's inInputData.
+// The tap is the only input delivered. Attempting to include the mic as a sub-device in
+// the same aggregate consistently produces silence for the mic track.
+// Two separate capture paths is the proven, reliable solution.
 
-/// Manages local recording using ScreenCaptureKit and AVCaptureSession.
-/// Supports two modes: system-audio-only (audio.wav) and screen+audio (audio.wav + recording.mp4).
 @MainActor
-final class AudioRecorder: NSObject, ObservableObject, SCStreamOutput {
+final class AudioRecorder: NSObject, ObservableObject {
+
     enum RecordingState {
         case idle, preparing, recording, paused
     }
@@ -509,153 +39,84 @@ final class AudioRecorder: NSObject, ObservableObject, SCStreamOutput {
     @Published var currentFilePath: URL?
     @Published var errorMessage: String?
 
-    private var stream: SCStream?
-    private var audioEngine: AVAudioEngine?
+    // MARK: System audio (Core Audio Tap)
 
-    private let mixer = DualTrackMixer()
-    // Wrapped in a `let` container so nonisolated SCStream callbacks can access it
-    // without actor-isolation errors (same pattern as `mixer` above).
-    private final class VideoMixerRef { var current: VideoFileMixer? }
-    private let videoMixerRef = VideoMixerRef()
-    private var currentMode: RecordingMode = .systemAudioOnly
+    private var tapID: AudioObjectID = AudioObjectID(kAudioObjectUnknown)
+    private var aggregateDeviceID: AudioDeviceID = AudioDeviceID(kAudioObjectUnknown)
+    private var ioProcID: AudioDeviceIOProcID?
+
+    private var deviceSampleRate: Double = 48000.0
+    private var monoInputFormat: AVAudioFormat?
+    private var tapConverter: AVAudioConverter?
+    private var sysAudioFile: AVAudioFile?
+    private var sysTempURL: URL?
+    private let sysWriterQueue = DispatchQueue(label: "com.klarity.sysWriter", qos: .userInitiated)
+
+    // MARK: Microphone (AVAudioEngine)
+
+    private var audioEngine: AVAudioEngine?
+    private var micConverter: AVAudioConverter?
+    private var micAudioFile: AVAudioFile?
+    private var micTempURL: URL?
+    private let micWriterQueue = DispatchQueue(label: "com.klarity.micWriter", qos: .userInitiated)
+
+    // MARK: Shared state
+
+    // isPaused is read from real-time threads — plain Bool is atomic on arm64/x86_64.
+    private var isPaused: Bool = false
+    private var hasSysAudio: Bool = false
+    private var hasMicAudio: Bool = false
+    private var controlState: RecordingState = .idle
+    private var isPreparingCapture: Bool = false
+
+    // MARK: Timer
 
     private var timer: Timer?
     private var recordingStart: Date?
     private var pauseAccumulated: Double = 0
     private var pauseStart: Date?
 
-    private var controlState: RecordingState = .idle
-    private var isPreparingCapture = false
-
-    private let logger = Logger(subsystem: "com.klarity.meeting-assistant", category: "AudioRecorder")
+    private let logger = AppLogger(category: "AudioRecorder")
+    private let kAggregateUID = "com.klarity.meetingrecorder.aggregate.v2"
 
     // MARK: - Public API
 
-    func startRecording(to audioURL: URL, videoURL: URL? = nil, mode: RecordingMode = .systemAudioOnly) {
+    func startRecording(to audioURL: URL) {
         errorMessage = nil
         guard controlState == .idle, !isPreparingCapture else { return }
 
-        currentMode = mode
-        state = .preparing  // Show "preparing" while hardware negotiates
+        guard #available(macOS 14.2, *) else {
+            errorMessage = "Meeting recording requires macOS 14.2 (Sonoma) or later."
+            return
+        }
+
+        state = .preparing
         isPreparingCapture = true
         currentFilePath = audioURL
 
         Task {
             do {
-                // Step 1: Request Screen Recording permission
-                self.logger.info("Step 1: Requesting SCShareableContent...")
-                let content: SCShareableContent
-                do {
-                    content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
-                } catch {
-                    let e = "SCShareableContent failed: \(error.localizedDescription)"
-                    self.logger.error("\(e, privacy: .public)")
-                    self.errorMessage = e
-                    self.resetToIdle()
-                    return
-                }
-
-                guard let display = content.displays.first else {
-                    self.errorMessage = "No display found for ScreenCaptureKit."
-                    self.resetToIdle()
-                    return
-                }
-                self.logger.info("Step 1: OK — found \(content.displays.count, privacy: .public) displays")
-
-                // Step 2: Setup audio mixer
-                self.logger.info("Step 2: Setting up audio mixer...")
-                do {
-                    try self.mixer.setup(url: audioURL)
-                } catch {
-                    let e = "Audio mixer setup failed: \(error.localizedDescription)"
-                    self.logger.error("\(e, privacy: .public)")
-                    self.errorMessage = e
-                    self.resetToIdle()
-                    return
-                }
-                self.logger.info("Step 2: Audio mixer OK")
-
-                // Step 3: Setup video mixer (screen mode only)
-                if mode == .screenAndSystemAudio, let vURL = videoURL {
-                    self.logger.info("Step 3: Setting up video mixer...")
-                    let vm = VideoFileMixer()
-                    do {
-                        try vm.setup(url: vURL, displayWidth: display.width, displayHeight: display.height)
-                        self.videoMixerRef.current = vm
-                    } catch {
-                        let e = "Video mixer setup failed: \(error.localizedDescription)"
-                        self.logger.error("\(e, privacy: .public)")
-                        self.errorMessage = e
-                        self.resetToIdle()
-                        return
-                    }
-                    self.logger.info("Step 3: Video mixer OK")
-                } else {
-                    self.logger.info("Step 3: Skipped (system audio only mode)")
-                }
-
-                // Step 4: Setup microphone
-                self.logger.info("Step 4: Setting up microphone...")
-                self.setupMicrophone()
-                self.logger.info("Step 4: Mic OK")
-
-                // Step 5: Setup SCStream
-                self.logger.info("Step 5: Setting up SCStream...")
-                do {
-                    try self.setupSystemAudio(display: display, mode: mode)
-                } catch {
-                    let e = "SCStream setup failed: \(error.localizedDescription)"
-                    self.logger.error("\(e, privacy: .public)")
-                    self.errorMessage = e
-                    self.resetToIdle()
-                    return
-                }
-                self.logger.info("Step 5: SCStream OK")
-
-                // Step 6: Start capture — this can take 15-20 seconds with Bluetooth audio
-                do {
-                    try self.audioEngine?.start()
-                } catch {
-                    let e = "Audio engine start failed: \(error.localizedDescription)"
-                    self.logger.error("\(e, privacy: .public)")
-                    self.errorMessage = e
-                    self.resetToIdle()
-                    return
-                }
-                self.logger.info("Step 6: Starting SCStream capture...")
-                do {
-                    try await self.stream?.startCapture()
-                } catch {
-                    let e = "startCapture failed: \(error.localizedDescription)"
-                    self.logger.error("\(e, privacy: .public)")
-                    self.errorMessage = e
-                    self.resetToIdle()
-                    return
-                }
-                self.logger.info("Step 6: Capture started OK")
-
-                // Only NOW flip to recording — hardware is confirmed ready
+                try await self.setupAndStart(audioURL: audioURL)
                 self.controlState = .recording
                 self.isPreparingCapture = false
                 self.state = .recording
                 self.recordingStart = Date()
                 self.startTimer()
-
+                self.logger.info("Recording started → \(audioURL.lastPathComponent)")
             } catch {
-                let errStr = error.localizedDescription
-                self.logger.error("Recording failed (uncaught): \(errStr, privacy: .public)")
-                self.errorMessage = "Failed to start recording: \(errStr)"
+                self.logger.error("Recording setup failed: \(error.localizedDescription)")
+                self.errorMessage = "Failed to start recording: \(error.localizedDescription)"
+                self.teardownAll()
                 self.resetToIdle()
-                self.cleanup()
             }
         }
     }
 
     func pauseRecording() {
         guard controlState == .recording else { return }
-        mixer.setPaused(true)
-        state = .paused
+        isPaused = true
         controlState = .paused
+        state = .paused
         pauseStart = Date()
         stopTimer()
     }
@@ -664,116 +125,536 @@ final class AudioRecorder: NSObject, ObservableObject, SCStreamOutput {
         guard controlState == .paused else { return }
         pauseAccumulated += Date().timeIntervalSince(pauseStart ?? Date())
         pauseStart = nil
-        mixer.setPaused(false)
-        state = .recording
+        isPaused = false
         controlState = .recording
+        state = .recording
         startTimer()
     }
 
     func stopRecording() async -> URL? {
         guard controlState == .recording || controlState == .paused else { return nil }
 
-        let path = currentFilePath
+        let savedPath = currentFilePath
         stopTimer()
-        state = .idle
         controlState = .idle
+        state = .idle
         isPreparingCapture = false
+        isPaused = false
         elapsedSeconds = 0
         pauseAccumulated = 0
 
-        // Stop mic engine first
-        audioEngine?.inputNode.removeTap(onBus: 0)
-        audioEngine?.stop()
+        // 1. Stop both capture paths
+        teardownCoreAudio()
+        stopMicCapture()
 
-        // Stop SCStream next
-        do {
-            try await stream?.stopCapture()
-        } catch {
-            logger.error("Error stopping SCStream: \(error.localizedDescription)")
+        // 2. Drain both writer queues so all pending writes complete
+        await withCheckedContinuation { continuation in
+            sysWriterQueue.async { continuation.resume() }
+        }
+        await withCheckedContinuation { continuation in
+            micWriterQueue.async { continuation.resume() }
         }
 
-        let successfullyCapturedData = mixer.hasStartedWriting
+        // 3. Close file handles
+        let sysTmp = sysTempURL
+        let micTmp = micTempURL
+        sysAudioFile = nil
+        micAudioFile = nil
+        sysTempURL = nil
+        micTempURL = nil
+        currentFilePath = nil
 
-        await mixer.finish()
-        await videoMixerRef.current?.finish()
-        videoMixerRef.current = nil
-        
-        // Wipe hardware locks
-        cleanup()
-
-        if !successfullyCapturedData {
-            logger.error("Recording stopped but 0 audio buffers were received from macOS.")
-            self.errorMessage = "Recording Failed: macOS blocked microphone/screen access. Please go to Settings > Permissions and hit Reset."
-            if let p = path { try? FileManager.default.removeItem(at: p) }
+        guard hasSysAudio, let sysURL = sysTmp, let outputURL = savedPath else {
+            logger.error("No system audio received — possible permission denial or tap failure")
+            errorMessage = "Recording failed: No audio captured. Grant 'System Audio Recording' permission in System Settings → Privacy, then try again."
+            sysTmp.flatMap { try? FileManager.default.removeItem(at: $0) }
+            micTmp.flatMap { try? FileManager.default.removeItem(at: $0) }
             return nil
         }
 
-        logger.info("Recording saved to: \(path?.path ?? "nil", privacy: .public)")
-        return path
+        // 4. Mix system audio + mic into the final output file
+        if hasMicAudio, let micURL = micTmp {
+            logger.info("Mixing system audio + mic → \(outputURL.lastPathComponent)")
+            do {
+                try await mixStreaming(sysURL: sysURL, micURL: micURL, outputURL: outputURL)
+            } catch {
+                logger.error("Mix failed (\(error.localizedDescription)) — using system audio only")
+                moveFile(from: sysURL, to: outputURL)
+                try? FileManager.default.removeItem(at: micURL)
+            }
+        } else {
+            logger.info("No mic audio — using system audio only")
+            moveFile(from: sysURL, to: outputURL)
+            if let m = micTmp { try? FileManager.default.removeItem(at: m) }
+        }
+
+        hasSysAudio = false
+        hasMicAudio = false
+        logger.info("Recording saved: \(outputURL.path)")
+        return outputURL
     }
 
-    // MARK: - Setup Subsystems
+    // MARK: - Setup
 
-    private func setupMicrophone() {
+    @available(macOS 14.2, *)
+    private func setupAndStart(audioURL: URL) async throws {
+        destroyLeftoverAggregateDevice()
+
+        // Temp file paths for two separate streams
+        let dir  = audioURL.deletingLastPathComponent()
+        let uuid = UUID().uuidString
+        let sysURL = dir.appendingPathComponent("audio_sys_tmp_\(uuid).wav")
+        let micURL = dir.appendingPathComponent("audio_mic_tmp_\(uuid).wav")
+        sysTempURL = sysURL
+        micTempURL = micURL
+
+        // Target format shared by both capture paths: 16kHz mono int16 PCM
+        let pcm16 = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16_000, channels: 1, interleaved: true)!
+
+        let outputUID = try defaultDeviceUID(selector: kAudioHardwarePropertyDefaultOutputDevice)
+        logger.info("Output UID: \(outputUID)")
+
+        // ── PATH 2: AVAudioEngine → microphone ────────────────────────────
+        // MUST start before creating the Core Audio aggregate device.
+        // AudioHardwareCreateAggregateDevice triggers a HAL reconfiguration; calling
+        // engine.start() (which calls prepare() internally) afterwards can deadlock.
+        // Non-throwing: mic failure skips mic capture but never aborts recording.
+        await setupMicCapture(outputURL: micURL, outputFormat: pcm16)
+
+        // ── PATH 1: Core Audio Tap → system audio ──────────────────────────
+
+        let tapDesc = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
+        tapDesc.muteBehavior = .unmuted
+
+        var localTapID = AudioObjectID(kAudioObjectUnknown)
+        let tapStatus = AudioHardwareCreateProcessTap(tapDesc, &localTapID)
+        guard tapStatus == noErr else { throw AudioRecorderError.tapCreationFailed(tapStatus) }
+        tapID = localTapID
+
+        // Aggregate device: output device + tap only (no mic sub-device).
+        // Adding a mic sub-device here doesn't surface mic data in the IOProc when
+        // the clock master is an output-only device — mic is captured separately via AVAudioEngine.
+        let tapUID = tapDesc.uuid.uuidString
+        let aggregateProps: [String: Any] = [
+            kAudioAggregateDeviceNameKey:          "KlarityMeetingRecorder",
+            kAudioAggregateDeviceUIDKey:           kAggregateUID,
+            kAudioAggregateDeviceIsPrivateKey:     true,
+            kAudioAggregateDeviceIsStackedKey:     false,
+            kAudioAggregateDeviceMainSubDeviceKey: outputUID,
+            kAudioAggregateDeviceTapListKey: [
+                [kAudioSubTapUIDKey: tapUID, kAudioSubTapDriftCompensationKey: true]
+            ],
+            kAudioAggregateDeviceSubDeviceListKey: [
+                [kAudioSubDeviceUIDKey: outputUID]
+            ]
+        ]
+
+        var localAggID = AudioDeviceID(kAudioObjectUnknown)
+        let aggStatus = AudioHardwareCreateAggregateDevice(aggregateProps as CFDictionary, &localAggID)
+        guard aggStatus == noErr else {
+            AudioHardwareDestroyProcessTap(tapID); tapID = AudioObjectID(kAudioObjectUnknown)
+            throw AudioRecorderError.aggregateDeviceCreationFailed(aggStatus)
+        }
+        aggregateDeviceID = localAggID
+
+        try await Task.sleep(nanoseconds: 150_000_000) // 150ms for HAL to stabilise
+
+        // Query the nominal sample rate from the aggregate device AFTER it has settled.
+        // This is the authoritative rate for what the IOProc will deliver.
+        // Must be done AFTER AVAudioEngine starts (above) because AVAudioEngine loads VPIO,
+        // which can force-change the output device's HAL sample rate before aggregate creation.
+        // Querying upfront (before engine start) may capture the pre-VPIO rate, causing a
+        // mismatch between the converter's input format and the actual IOProc buffer rate →
+        // audio plays back at 2× speed.
+        var aggrSrAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var aggrSr: Float64 = 0
+        var aggrSrSize = UInt32(MemoryLayout<Float64>.size)
+        if AudioObjectGetPropertyData(localAggID, &aggrSrAddr, 0, nil, &aggrSrSize, &aggrSr) == noErr, aggrSr > 0 {
+            deviceSampleRate = aggrSr
+        }
+        logger.info("Aggregate device sample rate: \(self.deviceSampleRate) Hz")
+
+        // Converter: mono float32 @ device rate → mono int16 @ 16kHz
+        let monoFmt = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: deviceSampleRate, channels: 1, interleaved: true)!
+        monoInputFormat = monoFmt
+        guard let conv = AVAudioConverter(from: monoFmt, to: pcm16) else {
+            throw AudioRecorderError.converterCreationFailed(monoFmt, pcm16)
+        }
+        tapConverter = conv
+
+        // System audio temp WAV
+        sysAudioFile = try AVAudioFile(forWriting: sysURL, settings: pcm16.settings,
+                                        commonFormat: .pcmFormatInt16, interleaved: true)
+
+        // IOProc
+        var localProcID: AudioDeviceIOProcID?
+        let procSt = AudioDeviceCreateIOProcIDWithBlock(&localProcID, localAggID, nil) {
+            [weak self] _, inInputData, _, _, _ in
+            self?.handleTapIOProc(inInputData: inInputData)
+        }
+        guard procSt == noErr, let procID = localProcID else { throw AudioRecorderError.ioProcCreationFailed(procSt) }
+        ioProcID = procID
+
+        let startSt = AudioDeviceStart(localAggID, procID)
+        guard startSt == noErr else {
+            AudioDeviceDestroyIOProcID(localAggID, procID); ioProcID = nil
+            throw AudioRecorderError.deviceStartFailed(startSt)
+        }
+    }
+
+    // Non-throwing: any failure just skips mic capture. Recording always continues with system audio.
+    private func setupMicCapture(outputURL: URL, outputFormat: AVAudioFormat) async {
+        // Request mic permission if needed. Denied → skip mic, not a recording failure.
+        let status = AVCaptureDevice.authorizationStatus(for: .audio)
+        if status == .notDetermined {
+            let granted = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+                AVCaptureDevice.requestAccess(for: .audio) { cont.resume(returning: $0) }
+            }
+            guard granted else {
+                logger.info("Mic permission denied — recording system audio only")
+                return
+            }
+        } else if status == .denied || status == .restricted {
+            logger.info("Mic permission not granted — recording system audio only")
+            return
+        }
+
+        // Confirm a default input device exists via CoreAudio.
+        // We don't use inputNode.inputFormat() here — it returns 0Hz before engine start.
+        var inputDevID = AudioDeviceID(kAudioObjectUnknown)
+        var inputAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var inputSize = UInt32(MemoryLayout<AudioDeviceID>.size)
+        AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject),
+                                   &inputAddr, 0, nil, &inputSize, &inputDevID)
+        guard inputDevID != AudioDeviceID(kAudioObjectUnknown) else {
+            logger.info("No default input device — recording system audio only")
+            return
+        }
+
+        guard let file = try? AVAudioFile(forWriting: outputURL, settings: outputFormat.settings,
+                                          commonFormat: .pcmFormatInt16, interleaved: true) else {
+            logger.error("Could not create mic output file — recording system audio only")
+            return
+        }
+        micAudioFile = file
+
         let engine = AVAudioEngine()
+
+        // CRITICAL: access inputNode on MainActor BEFORE start() — it is lazily created.
+        // Calling start() first leaves the engine graph empty → "inputNode != nullptr" crash.
         let inputNode = engine.inputNode
 
-        // Note: setVoiceProcessingEnabled(true) was removed because VPIO puts macOS
-        // into a system-wide "phone call" audio mode that reduces playback volume for
-        // all applications, making the user's active meeting (Zoom/Teams/etc.) inaudible.
-        // The mild mic echo in the recording is acceptable — ElevenLabs Scribe handles it.
+        // Install tap with nil format BEFORE engine.start().
+        // AVAudioEngine will negotiate the correct hardware format during start.
+        // Converter is created lazily on the first callback using buffer.format, which is
+        // always the true delivered format regardless of what outputFormat() reports pre-start.
+        inputNode.installTap(onBus: 0, bufferSize: 4096, format: nil) { [weak self] buffer, _ in
+            guard let self, !self.isPaused, buffer.frameLength > 0 else { return }
 
-        let hwFormat = inputNode.inputFormat(forBus: 0)
-        let mixer = self.mixer  // capture the reference for the tap closure
+            // Lazy one-time converter creation using the actual delivered buffer format.
+            if self.micConverter == nil {
+                self.micConverter = AVAudioConverter(from: buffer.format, to: outputFormat)
+            }
+            guard let converter = self.micConverter else { return }
 
-        inputNode.installTap(onBus: 0, bufferSize: 4096, format: hwFormat) { buffer, time in
-            guard let sb = makeCMSampleBuffer(from: buffer, at: time) else { return }
-            mixer.writeMicAudio(buffer: sb)
+            let ratio  = outputFormat.sampleRate / buffer.format.sampleRate
+            let outCap = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 4
+            guard let outBuf = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: outCap) else { return }
+
+            var inputUsed = false
+            converter.convert(to: outBuf, error: nil) { _, status in
+                if inputUsed { status.pointee = .noDataNow; return nil }
+                status.pointee = .haveData; inputUsed = true
+                return buffer
+            }
+            guard outBuf.frameLength > 0 else { return }
+
+            self.hasMicAudio = true
+            let fileRef = self.micAudioFile
+            self.micWriterQueue.async { try? fileRef?.write(from: outBuf) }
         }
 
-        engine.prepare()
+        // engine.start() calls prepare() internally — run on a background thread so it
+        // doesn't block the MainActor while the HAL initialises.
+        let started: Bool = await withCheckedContinuation { cont in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do { try engine.start(); cont.resume(returning: true) }
+                catch { cont.resume(returning: false) }
+            }
+        }
+
+        guard started else {
+            inputNode.removeTap(onBus: 0)
+            micAudioFile = nil
+            logger.error("AVAudioEngine failed to start — recording system audio only")
+            return
+        }
+
         audioEngine = engine
+        logger.info("Mic capture started")
     }
 
-    private func setupSystemAudio(display: SCDisplay, mode: RecordingMode) throws {
-        let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
-        let config = SCStreamConfiguration()
+    // MARK: - IOProc (Core Audio real-time thread — system audio only)
 
-        config.capturesAudio = true
-        config.excludesCurrentProcessAudio = true
-        config.width = display.width
-        config.height = display.height
+    private func handleTapIOProc(inInputData: UnsafePointer<AudioBufferList>) {
+        guard !isPaused,
+              let monoFmt   = monoInputFormat,
+              let converter = tapConverter else { return }
 
-        if mode == .screenAndSystemAudio {
-            config.minimumFrameInterval = CMTime(value: 1, timescale: 30)
+        let numBuffers = Int(inInputData.pointee.mNumberBuffers)
+        guard numBuffers > 0 else { return }
+
+        // Find frame count from first non-empty buffer (non-interleaved float32)
+        var frameCount = 0
+        withUnsafePointer(to: inInputData.pointee.mBuffers) { base in
+            for buf in UnsafeBufferPointer(start: base, count: numBuffers)
+                where buf.mDataByteSize > 0 && buf.mData != nil {
+                let nCh = max(1, Int(buf.mNumberChannels))
+                frameCount = Int(buf.mDataByteSize) / (MemoryLayout<Float32>.size * nCh)
+                break
+            }
+        }
+        guard frameCount > 0 else { return }
+
+        // Mix all tap channels to mono float32
+        var mixed = [Float32](repeating: 0.0, count: frameCount)
+        var nSources = 0
+        withUnsafePointer(to: inInputData.pointee.mBuffers) { base in
+            for buf in UnsafeBufferPointer(start: base, count: numBuffers) {
+                guard buf.mDataByteSize > 0, let data = buf.mData else { continue }
+                let nCh     = max(1, Int(buf.mNumberChannels))
+                let nFrames = min(frameCount, Int(buf.mDataByteSize) / (MemoryLayout<Float32>.size * nCh))
+                let samples = data.bindMemory(to: Float32.self, capacity: nFrames * nCh)
+                for f in 0..<nFrames {
+                    var s: Float32 = 0
+                    for c in 0..<nCh { s += samples[f * nCh + c] }
+                    mixed[f] += s / Float32(nCh)
+                }
+                nSources += 1
+            }
+        }
+        guard nSources > 0 else { return }
+        if nSources > 1 {
+            let scale = 1.0 / Float32(nSources)
+            for i in 0..<frameCount { mixed[i] *= scale }
         }
 
-        stream = SCStream(filter: filter, configuration: config, delegate: nil)
-        try stream?.addStreamOutput(self, type: .audio,
-                                    sampleHandlerQueue: DispatchQueue(label: "com.klarity.sysAudioQueue"))
+        hasSysAudio = true
 
-        if mode == .screenAndSystemAudio {
-            try stream?.addStreamOutput(self, type: .screen,
-                                        sampleHandlerQueue: DispatchQueue(label: "com.klarity.screenQueue"))
+        // Wrap in AVAudioPCMBuffer and convert to 16kHz int16
+        guard let inputBuf = AVAudioPCMBuffer(pcmFormat: monoFmt,
+                                               frameCapacity: AVAudioFrameCount(frameCount)) else { return }
+        inputBuf.frameLength = AVAudioFrameCount(frameCount)
+        if let dst = inputBuf.floatChannelData?[0] {
+            mixed.withUnsafeBufferPointer { dst.update(from: $0.baseAddress!, count: frameCount) }
         }
+
+        let ratio  = converter.outputFormat.sampleRate / monoFmt.sampleRate
+        let outCap = AVAudioFrameCount(Double(frameCount) * ratio) + 4
+        guard let outBuf = AVAudioPCMBuffer(pcmFormat: converter.outputFormat, frameCapacity: outCap) else { return }
+
+        var inputUsed = false
+        converter.convert(to: outBuf, error: nil) { _, status in
+            if inputUsed { status.pointee = .noDataNow; return nil }
+            status.pointee = .haveData; inputUsed = true; return inputBuf
+        }
+        guard outBuf.frameLength > 0 else { return }
+
+        let fileRef = sysAudioFile
+        sysWriterQueue.async { try? fileRef?.write(from: outBuf) }
     }
 
-    // MARK: - Callbacks
+    // MARK: - Post-recording streaming mix
 
-    nonisolated func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        switch type {
-        case .audio:
-            os_log("[AudioRecorder] SCStream audio buffer received")
-            mixer.writeSystemAudio(buffer: sampleBuffer)
-            videoMixerRef.current?.writeAudio(buffer: sampleBuffer)
-        case .screen:
-            videoMixerRef.current?.writeVideo(buffer: sampleBuffer)
-        default:
-            break
+    /// Reads both WAV files in chunks, averages samples, writes final audio.wav.
+    /// Streams the data — constant ~32KB working memory regardless of recording length.
+    private func mixStreaming(sysURL: URL, micURL: URL, outputURL: URL) async throws {
+        let float32Fmt = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                       sampleRate: 16_000, channels: 1, interleaved: true)!
+        let int16Fmt   = AVAudioFormat(commonFormat: .pcmFormatInt16,
+                                       sampleRate: 16_000, channels: 1, interleaved: true)!
+
+        let sysFile = try AVAudioFile(forReading: sysURL, commonFormat: .pcmFormatFloat32, interleaved: true)
+        let micFile = try AVAudioFile(forReading: micURL, commonFormat: .pcmFormatFloat32, interleaved: true)
+
+        if FileManager.default.fileExists(atPath: outputURL.path) {
+            try FileManager.default.removeItem(at: outputURL)
+        }
+        let outFile = try AVAudioFile(forWriting: outputURL, settings: int16Fmt.settings,
+                                      commonFormat: .pcmFormatInt16, interleaved: true)
+
+        // Float32→Int16 converter (used per-chunk)
+        guard let toInt16 = AVAudioConverter(from: float32Fmt, to: int16Fmt) else {
+            throw AudioRecorderError.converterCreationFailed(float32Fmt, int16Fmt)
+        }
+
+        let chunkSize: AVAudioFrameCount = 4096
+        let sysBuf  = AVAudioPCMBuffer(pcmFormat: float32Fmt, frameCapacity: chunkSize)!
+        let micBuf  = AVAudioPCMBuffer(pcmFormat: float32Fmt, frameCapacity: chunkSize)!
+        let mixBuf  = AVAudioPCMBuffer(pcmFormat: float32Fmt, frameCapacity: chunkSize)!
+        let outBuf  = AVAudioPCMBuffer(pcmFormat: int16Fmt,   frameCapacity: chunkSize)!
+
+        let totalFrames = max(sysFile.length, micFile.length)
+        var pos: AVAudioFramePosition = 0
+
+        while pos < totalFrames {
+            let remaining = AVAudioFrameCount(totalFrames - pos)
+            let toRead    = min(chunkSize, remaining)
+
+            // Read sys chunk (pad with zeros if exhausted)
+            let sysLeft = AVAudioFrameCount(max(0, sysFile.length - sysFile.framePosition))
+            let sysRead = min(toRead, sysLeft)
+            if sysRead > 0 {
+                sysBuf.frameLength = sysRead
+                try sysFile.read(into: sysBuf, frameCount: sysRead)
+            }
+
+            // Read mic chunk (pad with zeros if exhausted)
+            let micLeft = AVAudioFrameCount(max(0, micFile.length - micFile.framePosition))
+            let micRead = min(toRead, micLeft)
+            if micRead > 0 {
+                micBuf.frameLength = micRead
+                try micFile.read(into: micBuf, frameCount: micRead)
+            }
+
+            // Average sys + mic sample by sample
+            mixBuf.frameLength = toRead
+            let mixPtr = mixBuf.floatChannelData![0]
+            let sysPtr = sysBuf.floatChannelData![0]
+            let micPtr = micBuf.floatChannelData![0]
+            for i in 0..<Int(toRead) {
+                let s = i < sysRead ? sysPtr[i] : 0.0
+                let m = i < micRead ? micPtr[i] : 0.0
+                mixPtr[i] = (s + m) * 0.5
+            }
+
+            // Convert mixed float32 chunk → int16 and write
+            outBuf.frameLength = 0
+            var inputConsumed = false
+            toInt16.convert(to: outBuf, error: nil) { _, status in
+                if inputConsumed { status.pointee = .noDataNow; return nil }
+                status.pointee = .haveData; inputConsumed = true; return mixBuf
+            }
+            if outBuf.frameLength > 0 { try outFile.write(from: outBuf) }
+
+            pos += AVAudioFramePosition(toRead)
+        }
+
+        try? FileManager.default.removeItem(at: sysURL)
+        try? FileManager.default.removeItem(at: micURL)
+        logger.info("Mix complete: \(outputURL.lastPathComponent)")
+    }
+
+    // MARK: - Teardown
+
+    private func teardownCoreAudio() {
+        if aggregateDeviceID != AudioObjectID(kAudioObjectUnknown) {
+            if let proc = ioProcID {
+                AudioDeviceStop(aggregateDeviceID, proc)
+                AudioDeviceDestroyIOProcID(aggregateDeviceID, proc)
+                ioProcID = nil
+            }
+            AudioHardwareDestroyAggregateDevice(aggregateDeviceID)
+            aggregateDeviceID = AudioDeviceID(kAudioObjectUnknown)
+        }
+        if tapID != AudioObjectID(kAudioObjectUnknown) {
+            if #available(macOS 14.2, *) { AudioHardwareDestroyProcessTap(tapID) }
+            tapID = AudioObjectID(kAudioObjectUnknown)
+        }
+        tapConverter   = nil
+        monoInputFormat = nil
+        deviceSampleRate = 48000.0
+    }
+
+    private func stopMicCapture() {
+        audioEngine?.inputNode.removeTap(onBus: 0)
+        audioEngine?.stop()
+        audioEngine  = nil
+        micConverter = nil
+    }
+
+    private func teardownAll() {
+        teardownCoreAudio()
+        stopMicCapture()
+        sysAudioFile = nil
+        micAudioFile = nil
+        sysTempURL.flatMap { try? FileManager.default.removeItem(at: $0) }
+        micTempURL.flatMap { try? FileManager.default.removeItem(at: $0) }
+        sysTempURL = nil
+        micTempURL = nil
+        hasSysAudio  = false
+        hasMicAudio  = false
+    }
+
+    // MARK: - Device UID helpers
+
+    private func defaultDeviceUID(selector: AudioObjectPropertySelector) throws -> String {
+        var deviceID = AudioDeviceID(kAudioObjectUnknown)
+        var addr = AudioObjectPropertyAddress(mSelector: selector,
+                                              mScope: kAudioObjectPropertyScopeGlobal,
+                                              mElement: kAudioObjectPropertyElementMain)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let st   = AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject),
+                                              &addr, 0, nil, &size, &deviceID)
+        guard st == noErr else { throw AudioRecorderError.deviceLookupFailed(selector, st) }
+
+        var uidAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyDeviceUID,
+                                                 mScope: kAudioObjectPropertyScopeGlobal,
+                                                 mElement: kAudioObjectPropertyElementMain)
+        var uid: Unmanaged<CFString>?
+        var uidSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        let uidSt   = AudioObjectGetPropertyData(deviceID, &uidAddr, 0, nil, &uidSize, &uid)
+        guard uidSt == noErr, let uid else { throw AudioRecorderError.deviceUIDFailed(deviceID, uidSt) }
+        return uid.takeRetainedValue() as String
+    }
+
+    // MARK: - Leftover aggregate cleanup
+
+    @available(macOS 14.2, *)
+    private func destroyLeftoverAggregateDevice() {
+        var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices,
+                                              mScope: kAudioObjectPropertyScopeGlobal,
+                                              mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject),
+                                             &addr, 0, nil, &size) == noErr else { return }
+        let count   = Int(size) / MemoryLayout<AudioDeviceID>.size
+        var devices = [AudioDeviceID](repeating: AudioDeviceID(kAudioObjectUnknown), count: count)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject),
+                                         &addr, 0, nil, &size, &devices) == noErr else { return }
+        for deviceID in devices {
+            var uidAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyDeviceUID,
+                                                     mScope: kAudioObjectPropertyScopeGlobal,
+                                                     mElement: kAudioObjectPropertyElementMain)
+            var uid: Unmanaged<CFString>?
+            var uidSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+            guard AudioObjectGetPropertyData(deviceID, &uidAddr, 0, nil, &uidSize, &uid) == noErr,
+                  let uid else { continue }
+            if (uid.takeRetainedValue() as String) == kAggregateUID {
+                logger.warn("Destroying leftover aggregate: \(deviceID)")
+                AudioHardwareDestroyAggregateDevice(deviceID)
+            }
         }
     }
 
     // MARK: - Helpers
+
+    private func moveFile(from src: URL, to dst: URL) {
+        do {
+            if FileManager.default.fileExists(atPath: dst.path) {
+                try FileManager.default.removeItem(at: dst)
+            }
+            try FileManager.default.moveItem(at: src, to: dst)
+        } catch {
+            logger.error("moveFile failed: \(error.localizedDescription)")
+        }
+    }
 
     private func resetToIdle() {
         stopTimer()
@@ -782,23 +663,13 @@ final class AudioRecorder: NSObject, ObservableObject, SCStreamOutput {
         isPreparingCapture = false
         elapsedSeconds = 0
         pauseAccumulated = 0
+        pauseStart = nil
         recordingStart = nil
         currentFilePath = nil
+        isPaused = false
+        hasSysAudio = false
+        hasMicAudio = false
     }
-
-    private func cleanup() {
-        if let stream = stream {
-            try? stream.removeStreamOutput(self, type: .audio)
-            try? stream.removeStreamOutput(self, type: .screen)
-        }
-        stream = nil
-        
-        audioEngine?.inputNode.removeTap(onBus: 0)
-        audioEngine?.stop()
-        audioEngine = nil
-    }
-
-    // MARK: - Timer
 
     private func startTimer() {
         stopTimer()
@@ -813,81 +684,45 @@ final class AudioRecorder: NSObject, ObservableObject, SCStreamOutput {
         timer = t
     }
 
-    private func stopTimer() {
-        timer?.invalidate()
-        timer = nil
-    }
-}
+    private func stopTimer() { timer?.invalidate(); timer = nil }
 
-// MARK: - AVAudioPCMBuffer → CMSampleBuffer conversion (used by AVAudioEngine mic tap)
-
-private func makeCMSampleBuffer(from pcmBuffer: AVAudioPCMBuffer, at time: AVAudioTime) -> CMSampleBuffer? {
-    guard pcmBuffer.frameLength > 0 else { return nil }
-
-    var asbd = pcmBuffer.format.streamDescription.pointee
-    var fmtDesc: CMAudioFormatDescription?
-    guard CMAudioFormatDescriptionCreate(
-        allocator: kCFAllocatorDefault,
-        asbd: &asbd,
-        layoutSize: 0, layout: nil,
-        magicCookieSize: 0, magicCookie: nil,
-        extensions: nil,
-        formatDescriptionOut: &fmtDesc
-    ) == noErr, let fmtDesc else { return nil }
-
-    let sampleRate = pcmBuffer.format.sampleRate
-    let pts: CMTime
-    if time.isSampleTimeValid {
-        pts = CMTime(value: CMTimeValue(time.sampleTime), timescale: CMTimeScale(sampleRate))
-    } else {
-        var info = mach_timebase_info_data_t()
-        mach_timebase_info(&info)
-        let nanos = Double(time.hostTime) * Double(info.numer) / Double(info.denom)
-        pts = CMTime(seconds: nanos / 1_000_000_000, preferredTimescale: CMTimeScale(sampleRate))
-    }
-
-    var timing = CMSampleTimingInfo(
-        duration: CMTime(value: 1, timescale: CMTimeScale(sampleRate)),
-        presentationTimeStamp: pts,
-        decodeTimeStamp: .invalid
-    )
-
-    var sampleBuffer: CMSampleBuffer?
-    guard CMSampleBufferCreate(
-        allocator: kCFAllocatorDefault,
-        dataBuffer: nil,
-        dataReady: false,
-        makeDataReadyCallback: nil,
-        refcon: nil,
-        formatDescription: fmtDesc,
-        sampleCount: CMItemCount(pcmBuffer.frameLength),
-        sampleTimingEntryCount: 1,
-        sampleTimingArray: &timing,
-        sampleSizeEntryCount: 0,
-        sampleSizeArray: nil,
-        sampleBufferOut: &sampleBuffer
-    ) == noErr, let sampleBuffer else { return nil }
-
-    guard CMSampleBufferSetDataBufferFromAudioBufferList(
-        sampleBuffer,
-        blockBufferAllocator: kCFAllocatorDefault,
-        blockBufferMemoryAllocator: kCFAllocatorDefault,
-        flags: kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment,
-        bufferList: pcmBuffer.audioBufferList
-    ) == noErr else { return nil }
-
-    return sampleBuffer
-}
-
-extension AudioRecorder {
     var formattedElapsed: String {
-        let total = Int(elapsedSeconds)
-        let h = total / 3600
-        let m = (total % 3600) / 60
-        let s = total % 60
-        if h > 0 {
-            return String(format: "%d:%02d:%02d", h, m, s)
-        }
-        return String(format: "%02d:%02d", m, s)
+        let t = Int(elapsedSeconds)
+        let h = t / 3600, m = (t % 3600) / 60, s = t % 60
+        return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%02d:%02d", m, s)
+    }
+}
+
+// MARK: - Errors
+
+private enum AudioRecorderError: LocalizedError {
+    case tapCreationFailed(OSStatus)
+    case aggregateDeviceCreationFailed(OSStatus)
+    case formatQueryFailed(OSStatus)
+    case converterCreationFailed(AVAudioFormat, AVAudioFormat)
+    case ioProcCreationFailed(OSStatus)
+    case deviceStartFailed(OSStatus)
+    case deviceLookupFailed(AudioObjectPropertySelector, OSStatus)
+    case deviceUIDFailed(AudioDeviceID, OSStatus)
+
+    var errorDescription: String? {
+        switch self {
+        case .tapCreationFailed(let s):
+            return "System audio tap failed (OSStatus \(s)). Grant 'System Audio Recording' in System Settings → Privacy."
+        case .aggregateDeviceCreationFailed(let s):
+            return "Aggregate audio device creation failed (OSStatus \(s))."
+        case .formatQueryFailed(let s):
+            return "Could not read aggregate device format (OSStatus \(s))."
+        case .converterCreationFailed(let from, let to):
+            return "Audio converter failed: \(from) → \(to)."
+        case .ioProcCreationFailed(let s):
+            return "IOProc creation failed (OSStatus \(s))."
+        case .deviceStartFailed(let s):
+            return "Audio device start failed (OSStatus \(s))."
+        case .deviceLookupFailed(let sel, let s):
+            return "Device lookup failed (selector \(sel), OSStatus \(s))."
+        case .deviceUIDFailed(let id, let s):
+            return "Device UID query failed (device \(id), OSStatus \(s))."
+}
     }
 }

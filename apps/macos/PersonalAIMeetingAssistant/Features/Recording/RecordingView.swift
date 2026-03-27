@@ -78,20 +78,6 @@ struct RecordingView: View {
                         .onSubmit { startIfReady() }
                 }
 
-                // Recording mode
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Capture Mode")
-                        .font(AppTheme.Fonts.caption)
-                        .foregroundStyle(AppTheme.Colors.secondaryText)
-                        .textCase(.uppercase)
-                        .kerning(0.3)
-                    Picker("", selection: $vm.recordingMode) {
-                        ForEach(RecordingMode.allCases) { mode in
-                            Text(mode.rawValue).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                }
             }
             .padding(24)
 

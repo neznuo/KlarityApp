@@ -18,7 +18,7 @@ final class BackendProcessManager: ObservableObject {
     @Published var startupError: String?
 
     private var process: Process?
-    private let logger = Logger(subsystem: "com.klarity.meeting-assistant", category: "BackendProcess")
+    private let logger = AppLogger(category: "BackendProcess")
 
     private init() {}
 
@@ -104,7 +104,7 @@ final class BackendProcessManager: ObservableObject {
         if let fileHandle = try? FileHandle(forWritingTo: logURL) {
             proc.standardOutput = fileHandle
             proc.standardError = fileHandle
-            logger.info("Backend logging to file: \(logURL.path, privacy: .public)")
+            logger.info("Backend logging to file: \(logURL.path)")
         } else {
             // Fallback to unified logging
             let outPipe = Pipe()
@@ -130,7 +130,7 @@ final class BackendProcessManager: ObservableObject {
             Task { @MainActor [weak self] in
                 self?.isRunning = false
                 self?.process = nil
-                self?.logger.warning("Backend process terminated with code \(p.terminationStatus)")
+                self?.logger.warn("Backend process terminated with code \(p.terminationStatus)")
             }
         }
 
@@ -166,7 +166,7 @@ final class BackendProcessManager: ObservableObject {
         
         // If it refuses to terminate linearly, drop the hammer on it and all its children
         if sem.wait(timeout: .now() + 2.0) == .timedOut {
-            logger.warning("Backend did not shut down cleanly. Obliterating process tree.")
+            logger.warn("Backend did not shut down cleanly. Obliterating process tree.")
             
             // Kill all child worker threads first
             let pkill = Process()
