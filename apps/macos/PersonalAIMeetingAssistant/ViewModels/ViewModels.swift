@@ -440,20 +440,19 @@ import AppKit
 @MainActor
 final class PermissionsViewModel: ObservableObject {
     @Published var hasMicAccess = false
-    @Published var hasScreenAccess = false
-    
+    // System audio capture via Core Audio Tap does not have a pre-flight API.
+    // The permission prompt appears the first time AudioHardwareCreateProcessTap is called.
+    // We infer "granted" from whether the last recording actually received audio.
+    @Published var hasSystemAudioAccess: Bool? = nil   // nil = unknown (never recorded)
+
     init() {
         checkPermissions()
     }
-    
+
     func checkPermissions() {
-        // Check Microphone
         hasMicAccess = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
-        
-        // Check Screen Recording (macOS 14+ uses SCShareableContent, but CGPreflight is available since 11.0)
-        hasScreenAccess = CGPreflightScreenCaptureAccess()
     }
-    
+
     func requestMicAccess() {
         AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
             DispatchQueue.main.async {
@@ -461,11 +460,11 @@ final class PermissionsViewModel: ObservableObject {
             }
         }
     }
-    
-    func requestScreenAccess() {
-        // This will pop the system prompt if not yet granted
-        let granted = CGRequestScreenCaptureAccess()
-        hasScreenAccess = granted
+
+    /// Call this after a recording attempt. `receivedAudio` is true if the tap
+    /// delivered non-silence — which confirms system audio permission was granted.
+    func updateSystemAudioStatus(receivedAudio: Bool) {
+        hasSystemAudioAccess = receivedAudio
     }
 
     func resetPermissions() {

@@ -26,6 +26,11 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>KlarityApp records meeting audio from your microphone.</string>
+	<!-- Required for Core Audio Process Tap (system audio capture). Does not appear
+	     in Xcode's Info.plist dropdown — must be added manually. Without this key
+	     macOS will silently deliver silence from the tap even if the user approves. -->
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>KlarityApp captures system audio to record meeting participants.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 	<key>NSScreenCaptureUsageDescription</key>

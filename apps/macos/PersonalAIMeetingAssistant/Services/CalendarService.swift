@@ -10,7 +10,7 @@ final class CalendarService: NSObject, ASWebAuthenticationPresentationContextPro
     static let shared = CalendarService()
 
     private let urlSession = URLSession.shared
-    private let logger = Logger(subsystem: "com.klarity.meeting-assistant", category: "CalendarService")
+    private let logger = AppLogger(category: "CalendarService")
 
     /// Retains the active auth session to prevent premature deallocation.
     private var authSession: ASWebAuthenticationSession?
@@ -76,7 +76,7 @@ final class CalendarService: NSObject, ASWebAuthenticationPresentationContextPro
         else { throw CalendarError.noAuthCode }
 
         try await exchangeCode(code, verifier: verifier, provider: provider)
-        logger.info("Authenticated with \(provider.rawValue, privacy: .public)")
+        logger.info("Authenticated with \(provider.rawValue)")
     }
 
     func disconnect(_ provider: CalendarSource) {
@@ -92,7 +92,7 @@ final class CalendarService: NSObject, ASWebAuthenticationPresentationContextPro
             KeychainService.delete(key: KeychainService.msTokenExpiry)
             Task { _ = try? await APIClient.shared.updateSettings(["outlook_connected": false]) }
         }
-        logger.info("Disconnected \(provider.rawValue, privacy: .public)")
+        logger.info("Disconnected \(provider.rawValue)")
     }
 
     func fetchAllEvents() async -> [CalendarEvent] {

@@ -177,32 +177,47 @@ struct SettingsView: View {
                 }
             }
 
-            Section("Permissions & Privacy") {
+            Section {
                 @StateObject var permVM = PermissionsViewModel()
-                
-                LabeledContent("Microphone Access") {
+
+                LabeledContent("Microphone") {
                     if permVM.hasMicAccess {
-                        Text("Granted").foregroundStyle(.green)
+                        Label("Granted", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
                     } else {
-                        Button("Request") { permVM.requestMicAccess() }
+                        Button("Grant Access") { permVM.requestMicAccess() }
+                            .foregroundStyle(AppTheme.Colors.accentRed)
                     }
                 }
-                
-                LabeledContent("Screen & System Audio") {
-                    if permVM.hasScreenAccess {
-                        Text("Granted").foregroundStyle(.green)
-                    } else {
-                        Button("Request") { permVM.requestScreenAccess() }
+
+                LabeledContent("System Audio Recording") {
+                    switch permVM.hasSystemAudioAccess {
+                    case .some(true):
+                        Label("Granted", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                    case .some(false):
+                        Text("Denied — start a recording to re-prompt")
+                            .foregroundStyle(AppTheme.Colors.accentRed)
+                            .font(AppTheme.Fonts.caption)
+                    case .none:
+                        Text("Prompted on first recording")
+                            .foregroundStyle(.secondary)
+                            .font(AppTheme.Fonts.caption)
                     }
                 }
-                
+
                 Button(role: .destructive) {
                     permVM.resetPermissions()
                 } label: {
                     Label("Reset All Permissions (Restarts App)", systemImage: "arrow.counterclockwise")
                 }
                 .padding(.top, 4)
-                .help("If macOS keeps asking for permissions but doesn't register them, click this to reset the privacy database for Klarity.")
+                .help("Resets all macOS privacy permissions for Klarity and restarts the app. Use this if permissions appear stuck.")
+            } header: {
+                Text("Permissions & Privacy")
+            } footer: {
+                Text("System audio recording uses a purple dot indicator (not screen recording). The permission prompt appears once when you start your first recording.")
+                    .foregroundStyle(.secondary)
             }
 
             Section {
