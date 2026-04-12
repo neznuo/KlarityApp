@@ -25,6 +25,9 @@ struct KlarityApp: App {
                 .environmentObject(recordingManager)
                 .environmentObject(menuBarManager)
                 .preferredColorScheme(appState.preferredColorScheme)
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+                    recordingManager.recorder.cleanup()
+                }
         }
         .defaultSize(width: 1280, height: 820)
         .commands {
