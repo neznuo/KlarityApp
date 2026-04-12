@@ -193,9 +193,15 @@ Do **not** use `SCStream` (ScreenCaptureKit) for system audio. It silently stops
 ### Startup Order (non-negotiable — each step depends on the previous)
 
 ```
+0. stopAllCapture()
+      Full teardown of any previous recording state (tap, aggregate, engine, listeners).
+      Ensures clean state before starting. Prevents leftover resources from a crashed
+      or incomplete previous recording from interfering.
+
 1. destroyLeftoverAggregateDevice()
-      Enumerate HAL devices by UID and destroy any leftover aggregate from a prior
+      Enumerate HAL devices by UID AND name, destroy any leftover aggregate from a prior
       crashed session. Creating a new aggregate with the same UID silently fails.
+      Also destroys aggregates matching the name "KlarityMeetingRecorder".
 
 2. setupMicCapture()  ← AVAudioEngine starts HERE, before the aggregate is created
       a. Check mic permission inline (non-fatal — denied = skip mic, don't throw)
@@ -260,6 +266,22 @@ After both writer queues drain: reads both temp WAVs in 4096-frame Float32 chunk
 `AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16_000, channels: 1, interleaved: true)`
 
 Both temp files and final `audio.wav` use this format. **No AAC, no .caf, no Float32 WAV.**
+
+### Reliability Safeguards (added 2026-04-12)
+
+1. **Thread safety**: `hasSysAudio`, `hasMicAudio`, and `isPaused` use `OSAllocatedUnfairLock<Bool>` — they are accessed from both the real-time IOProc thread and MainActor. Bare `Bool` properties can produce stale reads across threads, causing `stopRecording()` to skip mixing or discard captured audio.
+
+2. **Full teardown before each recording**: `setupAndStart()` calls `stopAllCapture()` before creating any new resources. This prevents leftover state from a previous recording (or crashed session) from interfering. `destroyLeftoverAggregateDevice()` now matches by both UID and name.
+
+3. **Retry for aggregate device creation**: `AudioHardwareCreateAggregateDevice` is retried up to 3 times with 100ms delay. Transient failures are common after a previous recording's cleanup.
+
+4. **State machine**: Recording state transitions are enforced — `idle → preparing → recording → idle` and `recording → paused → recording/idle`. Invalid transitions log warnings. `controlState` and `isPreparingCapture` are removed; the single `state` property is the source of truth.
+
+5. **Health check timer**: 3 seconds after recording starts, checks whether `hasSysAudio` and `hasMicAudio` are true. If not, logs a diagnostic warning (doesn't stop recording — just informs). A 10-second periodic stall detector warns if audio stops flowing during recording.
+
+6. **Audio device change detection**: Core Audio property listeners for `kAudioHardwarePropertyDefaultOutputDevice` and `kAudioHardwarePropertyDefaultInputDevice` are registered during recording. Changes (headphones unplugged, Bluetooth disconnected) log a warning. No automatic restart — that's a future iteration.
+
+7. **App lifecycle cleanup**: `AudioRecorder.cleanup()` is called from `NSApplication.willTerminateNotification` to release Core Audio taps and aggregate devices even if the app is killed mid-recording.
 
 ---
 

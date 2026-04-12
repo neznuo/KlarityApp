@@ -1,7 +1,7 @@
 @preconcurrency import AVFoundation
 import CoreAudio
 import Foundation
-import os.log
+import os.lock
 
 // MARK: - AudioRecorder
 //
@@ -60,48 +60,78 @@ final class AudioRecorder: NSObject, ObservableObject {
     private var micTempURL: URL?
     private let micWriterQueue = DispatchQueue(label: "com.klarity.micWriter", qos: .userInitiated)
 
-    // MARK: Shared state
+    // MARK: Shared state (thread-safe)
 
-    // isPaused is read from real-time threads — plain Bool is atomic on arm64/x86_64.
-    private var isPaused: Bool = false
-    private var hasSysAudio: Bool = false
-    private var hasMicAudio: Bool = false
-    private var controlState: RecordingState = .idle
-    private var isPreparingCapture: Bool = false
+    // These are accessed from both real-time IOProc/mic-tap threads and MainActor.
+    // OSAllocatedUnfairLock provides the memory barrier needed for cross-thread visibility.
+    private let hasSysAudioLock = OSAllocatedUnfairLock(initialState: false)
+    private let hasMicAudioLock = OSAllocatedUnfairLock(initialState: false)
+    private let isPausedLock = OSAllocatedUnfairLock(initialState: false)
 
-    // MARK: Timer
+    // MARK: Timers
 
     private var timer: Timer?
     private var recordingStart: Date?
     private var pauseAccumulated: Double = 0
     private var pauseStart: Date?
+    private var healthCheckTimer: Timer?
+    private var stallCheckTimer: Timer?
+
+    // MARK: Audio device change listener
+
+    private var outputDeviceChangeListenerInstalled = false
+    private var inputDeviceChangeListenerInstalled = false
 
     private let logger = AppLogger(category: "AudioRecorder")
     private let kAggregateUID = "com.klarity.meetingrecorder.aggregate.v2"
+    private let kAggregateName = "KlarityMeetingRecorder"
+
+    // MARK: - State machine
+
+    /// Enforces valid state transitions. Logs warnings for invalid transitions.
+    private func transition(to newState: RecordingState) {
+        let from = state
+        let valid: Bool
+        switch (from, newState) {
+        case (.idle, .preparing):      valid = true
+        case (.preparing, .recording): valid = true
+        case (.preparing, .idle):      valid = true  // setup failed
+        case (.recording, .paused):    valid = true
+        case (.recording, .idle):      valid = true  // stop
+        case (.paused, .recording):    valid = true   // resume
+        case (.paused, .idle):         valid = true   // stop
+        default:                       valid = false
+        }
+        if !valid {
+            logger.warn("Invalid state transition: \(from) → \(newState)")
+        }
+        state = newState
+    }
 
     // MARK: - Public API
 
     func startRecording(to audioURL: URL) {
         errorMessage = nil
-        guard controlState == .idle, !isPreparingCapture else { return }
+        guard state == .idle else {
+            logger.warn("startRecording called in state \(state) — ignoring")
+            return
+        }
 
         guard #available(macOS 14.2, *) else {
             errorMessage = "Meeting recording requires macOS 14.2 (Sonoma) or later."
             return
         }
 
-        state = .preparing
-        isPreparingCapture = true
+        transition(to: .preparing)
         currentFilePath = audioURL
 
         Task {
             do {
                 try await self.setupAndStart(audioURL: audioURL)
-                self.controlState = .recording
-                self.isPreparingCapture = false
-                self.state = .recording
+                self.transition(to: .recording)
                 self.recordingStart = Date()
                 self.startTimer()
+                self.scheduleHealthCheck()
                 self.logger.info("Recording started → \(audioURL.lastPathComponent)")
             } catch {
                 self.logger.error("Recording setup failed: \(error.localizedDescription)")
@@ -113,39 +143,35 @@ final class AudioRecorder: NSObject, ObservableObject {
     }
 
     func pauseRecording() {
-        guard controlState == .recording else { return }
-        isPaused = true
-        controlState = .paused
-        state = .paused
+        guard state == .recording else { return }
+        isPausedLock.withLock { $0 = true }
+        transition(to: .paused)
         pauseStart = Date()
         stopTimer()
     }
 
     func resumeRecording() {
-        guard controlState == .paused else { return }
+        guard state == .paused else { return }
         pauseAccumulated += Date().timeIntervalSince(pauseStart ?? Date())
         pauseStart = nil
-        isPaused = false
-        controlState = .recording
-        state = .recording
+        isPausedLock.withLock { $0 = false }
+        transition(to: .recording)
         startTimer()
     }
 
     func stopRecording() async -> URL? {
-        guard controlState == .recording || controlState == .paused else { return nil }
+        guard state == .recording || state == .paused else { return nil }
 
         let savedPath = currentFilePath
         stopTimer()
-        controlState = .idle
-        state = .idle
-        isPreparingCapture = false
-        isPaused = false
+        cancelHealthCheck()
+        transition(to: .idle)
+        isPausedLock.withLock { $0 = false }
         elapsedSeconds = 0
         pauseAccumulated = 0
 
-        // 1. Stop both capture paths
-        teardownCoreAudio()
-        stopMicCapture()
+        // 1. Stop both capture paths and device listeners
+        stopAllCapture()
 
         // 2. Drain both writer queues so all pending writes complete
         await withCheckedContinuation { continuation in
@@ -164,7 +190,10 @@ final class AudioRecorder: NSObject, ObservableObject {
         micTempURL = nil
         currentFilePath = nil
 
-        guard hasSysAudio, let sysURL = sysTmp, let outputURL = savedPath else {
+        let hasSys = hasSysAudioLock.withLock { $0 }
+        let hasMic = hasMicAudioLock.withLock { $0 }
+
+        guard hasSys, let sysURL = sysTmp, let outputURL = savedPath else {
             logger.error("No system audio received — possible permission denial or tap failure")
             errorMessage = "Recording failed: No audio captured. Grant 'System Audio Recording' permission in System Settings → Privacy, then try again."
             sysTmp.flatMap { try? FileManager.default.removeItem(at: $0) }
@@ -173,7 +202,7 @@ final class AudioRecorder: NSObject, ObservableObject {
         }
 
         // 4. Mix system audio + mic into the final output file
-        if hasMicAudio, let micURL = micTmp {
+        if hasMic, let micURL = micTmp {
             logger.info("Mixing system audio + mic → \(outputURL.lastPathComponent)")
             do {
                 try await mixStreaming(sysURL: sysURL, micURL: micURL, outputURL: outputURL)
@@ -188,16 +217,29 @@ final class AudioRecorder: NSObject, ObservableObject {
             if let m = micTmp { try? FileManager.default.removeItem(at: m) }
         }
 
-        hasSysAudio = false
-        hasMicAudio = false
+        hasSysAudioLock.withLock { $0 = false }
+        hasMicAudioLock.withLock { $0 = false }
         logger.info("Recording saved: \(outputURL.path)")
         return outputURL
+    }
+
+    /// Clean up all resources. Called from app termination handler.
+    /// Safe to call multiple times and from any state.
+    @MainActor
+    func cleanup() {
+        teardownAll()
+        resetToIdle()
     }
 
     // MARK: - Setup
 
     @available(macOS 14.2, *)
     private func setupAndStart(audioURL: URL) async throws {
+        // Full teardown of any previous recording state before starting fresh.
+        // This handles the case where a previous recording's cleanup was incomplete
+        // (e.g., app crash, interrupted stop).
+        stopAllCapture()
+
         destroyLeftoverAggregateDevice()
 
         // Temp file paths for two separate streams
@@ -235,8 +277,10 @@ final class AudioRecorder: NSObject, ObservableObject {
         // Adding a mic sub-device here doesn't surface mic data in the IOProc when
         // the clock master is an output-only device — mic is captured separately via AVAudioEngine.
         let tapUID = tapDesc.uuid.uuidString
+
+        // Retry aggregate device creation — transient failures are common after cleanup.
         let aggregateProps: [String: Any] = [
-            kAudioAggregateDeviceNameKey:          "KlarityMeetingRecorder",
+            kAudioAggregateDeviceNameKey:          kAggregateName,
             kAudioAggregateDeviceUIDKey:           kAggregateUID,
             kAudioAggregateDeviceIsPrivateKey:     true,
             kAudioAggregateDeviceIsStackedKey:     false,
@@ -251,9 +295,25 @@ final class AudioRecorder: NSObject, ObservableObject {
 
         var localAggID = AudioDeviceID(kAudioObjectUnknown)
         let aggStatus = AudioHardwareCreateAggregateDevice(aggregateProps as CFDictionary, &localAggID)
-        guard aggStatus == noErr else {
-            AudioHardwareDestroyProcessTap(tapID); tapID = AudioObjectID(kAudioObjectUnknown)
-            throw AudioRecorderError.aggregateDeviceCreationFailed(aggStatus)
+        if aggStatus != noErr {
+            // Retry up to 3 times with a short delay
+            var lastStatus = aggStatus
+            for attempt in 1...3 {
+                logger.warn("Aggregate device creation failed (OSStatus \(lastStatus)), retry \(attempt)/3")
+                try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+                // Destroy any leftover aggregate that might be blocking creation
+                destroyLeftoverAggregateDevice()
+                let retryStatus = AudioHardwareCreateAggregateDevice(aggregateProps as CFDictionary, &localAggID)
+                if retryStatus == noErr {
+                    lastStatus = noErr
+                    break
+                }
+                lastStatus = retryStatus
+            }
+            if lastStatus != noErr {
+                AudioHardwareDestroyProcessTap(tapID); tapID = AudioObjectID(kAudioObjectUnknown)
+                throw AudioRecorderError.aggregateDeviceCreationFailed(lastStatus)
+            }
         }
         aggregateDeviceID = localAggID
 
@@ -291,10 +351,10 @@ final class AudioRecorder: NSObject, ObservableObject {
 
         // IOProc
         var localProcID: AudioDeviceIOProcID?
-        let procSt = AudioDeviceCreateIOProcIDWithBlock(&localProcID, localAggID, nil) {
-            [weak self] _, inInputData, _, _, _ in
+        let procSt = AudioDeviceCreateIOProcIDWithBlock(&localProcID, localAggID, nil,
+            { [weak self] _, inInputData, _, _, _ in
             self?.handleTapIOProc(inInputData: inInputData)
-        }
+        })
         guard procSt == noErr, let procID = localProcID else { throw AudioRecorderError.ioProcCreationFailed(procSt) }
         ioProcID = procID
 
@@ -303,6 +363,9 @@ final class AudioRecorder: NSObject, ObservableObject {
             AudioDeviceDestroyIOProcID(localAggID, procID); ioProcID = nil
             throw AudioRecorderError.deviceStartFailed(startSt)
         }
+
+        // Register device change listeners
+        installDeviceChangeListeners()
     }
 
     // Non-throwing: any failure just skips mic capture. Recording always continues with system audio.
@@ -354,8 +417,10 @@ final class AudioRecorder: NSObject, ObservableObject {
         // AVAudioEngine will negotiate the correct hardware format during start.
         // Converter is created lazily on the first callback using buffer.format, which is
         // always the true delivered format regardless of what outputFormat() reports pre-start.
-        inputNode.installTap(onBus: 0, bufferSize: 4096, format: nil) { [weak self] buffer, _ in
-            guard let self, !self.isPaused, buffer.frameLength > 0 else { return }
+        inputNode.installTap(onBus: 0, bufferSize: 4096, format: nil, block: { [weak self] buffer, _ in
+            guard let self else { return }
+            let paused = self.isPausedLock.withLock { $0 }
+            guard !paused, buffer.frameLength > 0 else { return }
 
             // Lazy one-time converter creation using the actual delivered buffer format.
             if self.micConverter == nil {
@@ -375,10 +440,10 @@ final class AudioRecorder: NSObject, ObservableObject {
             }
             guard outBuf.frameLength > 0 else { return }
 
-            self.hasMicAudio = true
+            self.hasMicAudioLock.withLock { $0 = true }
             let fileRef = self.micAudioFile
             self.micWriterQueue.async { try? fileRef?.write(from: outBuf) }
-        }
+        })
 
         // engine.start() calls prepare() internally — run on a background thread so it
         // doesn't block the MainActor while the HAL initialises.
@@ -403,7 +468,8 @@ final class AudioRecorder: NSObject, ObservableObject {
     // MARK: - IOProc (Core Audio real-time thread — system audio only)
 
     private func handleTapIOProc(inInputData: UnsafePointer<AudioBufferList>) {
-        guard !isPaused,
+        let paused = isPausedLock.withLock { $0 }
+        guard !paused,
               let monoFmt   = monoInputFormat,
               let converter = tapConverter else { return }
 
@@ -445,7 +511,7 @@ final class AudioRecorder: NSObject, ObservableObject {
             for i in 0..<frameCount { mixed[i] *= scale }
         }
 
-        hasSysAudio = true
+        hasSysAudioLock.withLock { $0 = true }
 
         // Wrap in AVAudioPCMBuffer and convert to 16kHz int16
         guard let inputBuf = AVAudioPCMBuffer(pcmFormat: monoFmt,
@@ -468,6 +534,98 @@ final class AudioRecorder: NSObject, ObservableObject {
 
         let fileRef = sysAudioFile
         sysWriterQueue.async { try? fileRef?.write(from: outBuf) }
+    }
+
+    // MARK: - Health check & stall detection
+
+    private func scheduleHealthCheck() {
+        cancelHealthCheck()
+        // Check after 3 seconds whether audio data is actually flowing
+        healthCheckTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor in
+                let hasSys = self.hasSysAudioLock.withLock { $0 }
+                let hasMic = self.hasMicAudioLock.withLock { $0 }
+                if !hasSys {
+                    self.logger.warn("Health check: No system audio received after 3s — check 'System Audio Recording' permission in System Settings → Privacy")
+                }
+                if !hasMic {
+                    // Mic failure is expected if permission was denied, so only warn if we attempted mic
+                    if self.audioEngine != nil {
+                        self.logger.warn("Health check: No mic audio received after 3s — mic may be unavailable or permission denied")
+                    }
+                }
+            }
+        }
+        // Periodic stall detection: warn if no data for 10s during active recording
+        stallCheckTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor in
+                guard self.state == .recording else { return }
+                let hasSys = self.hasSysAudioLock.withLock { $0 }
+                if !hasSys {
+                    self.logger.warn("Stall detection: No system audio data received in 10s — audio device may have changed or tap may have stopped")
+                }
+            }
+        }
+    }
+
+    private func cancelHealthCheck() {
+        healthCheckTimer?.invalidate()
+        healthCheckTimer = nil
+        stallCheckTimer?.invalidate()
+        stallCheckTimer = nil
+    }
+
+    // MARK: - Audio device change detection
+
+    private func installDeviceChangeListeners() {
+        guard !outputDeviceChangeListenerInstalled else { return }
+        var outputAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        let outputStatus = AudioObjectAddPropertyListener(
+            AudioObjectID(kAudioObjectSystemObject), &outputAddr,
+            klarityAudioDeviceChangedCallback, nil)
+        if outputStatus == noErr {
+            outputDeviceChangeListenerInstalled = true
+        }
+
+        guard !inputDeviceChangeListenerInstalled else { return }
+        var inputAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        let inputStatus = AudioObjectAddPropertyListener(
+            AudioObjectID(kAudioObjectSystemObject), &inputAddr,
+            klarityAudioDeviceChangedCallback, nil)
+        if inputStatus == noErr {
+            inputDeviceChangeListenerInstalled = true
+        }
+    }
+
+    private func removeDeviceChangeListeners() {
+        if outputDeviceChangeListenerInstalled {
+            var outputAddr = AudioObjectPropertyAddress(
+                mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain)
+            AudioObjectRemovePropertyListener(
+                AudioObjectID(kAudioObjectSystemObject), &outputAddr,
+                klarityAudioDeviceChangedCallback, nil)
+            outputDeviceChangeListenerInstalled = false
+        }
+        if inputDeviceChangeListenerInstalled {
+            var inputAddr = AudioObjectPropertyAddress(
+                mSelector: kAudioHardwarePropertyDefaultInputDevice,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain)
+            AudioObjectRemovePropertyListener(
+                AudioObjectID(kAudioObjectSystemObject), &inputAddr,
+                klarityAudioDeviceChangedCallback, nil)
+            inputDeviceChangeListenerInstalled = false
+        }
     }
 
     // MARK: - Post-recording streaming mix
@@ -553,6 +711,14 @@ final class AudioRecorder: NSObject, ObservableObject {
 
     // MARK: - Teardown
 
+    /// Stops all audio capture (Core Audio tap + AVAudioEngine) and removes device listeners.
+    /// Does NOT reset state or close files — used both during normal stop and before re-initialization.
+    private func stopAllCapture() {
+        teardownCoreAudio()
+        stopMicCapture()
+        removeDeviceChangeListeners()
+    }
+
     private func teardownCoreAudio() {
         if aggregateDeviceID != AudioObjectID(kAudioObjectUnknown) {
             if let proc = ioProcID {
@@ -580,16 +746,15 @@ final class AudioRecorder: NSObject, ObservableObject {
     }
 
     private func teardownAll() {
-        teardownCoreAudio()
-        stopMicCapture()
+        stopAllCapture()
         sysAudioFile = nil
         micAudioFile = nil
         sysTempURL.flatMap { try? FileManager.default.removeItem(at: $0) }
         micTempURL.flatMap { try? FileManager.default.removeItem(at: $0) }
         sysTempURL = nil
         micTempURL = nil
-        hasSysAudio  = false
-        hasMicAudio  = false
+        hasSysAudioLock.withLock { $0 = false }
+        hasMicAudioLock.withLock { $0 = false }
     }
 
     // MARK: - Device UID helpers
@@ -629,6 +794,7 @@ final class AudioRecorder: NSObject, ObservableObject {
         guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject),
                                          &addr, 0, nil, &size, &devices) == noErr else { return }
         for deviceID in devices {
+            // Check for our well-known UID
             var uidAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyDeviceUID,
                                                      mScope: kAudioObjectPropertyScopeGlobal,
                                                      mElement: kAudioObjectPropertyElementMain)
@@ -636,8 +802,22 @@ final class AudioRecorder: NSObject, ObservableObject {
             var uidSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
             guard AudioObjectGetPropertyData(deviceID, &uidAddr, 0, nil, &uidSize, &uid) == noErr,
                   let uid else { continue }
-            if (uid.takeRetainedValue() as String) == kAggregateUID {
-                logger.warn("Destroying leftover aggregate: \(deviceID)")
+            let uidStr = uid.takeRetainedValue() as String
+            if uidStr == kAggregateUID {
+                logger.warn("Destroying leftover aggregate (by UID): \(deviceID)")
+                AudioHardwareDestroyAggregateDevice(deviceID)
+                continue
+            }
+
+            // Also check by name for aggregates left from a different UID or corrupted state
+            var nameAddr = AudioObjectPropertyAddress(mSelector: kAudioObjectPropertyName,
+                                                      mScope: kAudioObjectPropertyScopeGlobal,
+                                                      mElement: kAudioObjectPropertyElementMain)
+            var name: Unmanaged<CFString>?
+            var nameSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+            if AudioObjectGetPropertyData(deviceID, &nameAddr, 0, nil, &nameSize, &name) == noErr,
+               let name, (name.takeRetainedValue() as String) == kAggregateName {
+                logger.warn("Destroying leftover aggregate (by name): \(deviceID)")
                 AudioHardwareDestroyAggregateDevice(deviceID)
             }
         }
@@ -657,18 +837,15 @@ final class AudioRecorder: NSObject, ObservableObject {
     }
 
     private func resetToIdle() {
-        stopTimer()
+        cancelHealthCheck()
+        timer?.invalidate(); timer = nil
         state = .idle
-        controlState = .idle
-        isPreparingCapture = false
+        isPausedLock.withLock { $0 = false }
         elapsedSeconds = 0
         pauseAccumulated = 0
         pauseStart = nil
         recordingStart = nil
         currentFilePath = nil
-        isPaused = false
-        hasSysAudio = false
-        hasMicAudio = false
     }
 
     private func startTimer() {
@@ -691,6 +868,25 @@ final class AudioRecorder: NSObject, ObservableObject {
         let h = t / 3600, m = (t % 3600) / 60, s = t % 60
         return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%02d:%02d", m, s)
     }
+}
+
+// MARK: - Core Audio device change callback (free function required for C interop)
+
+/// Core Audio property listener callback for default audio device changes.
+/// Called on a Core Audio background thread when the default output or input device changes.
+/// Logs a warning so the user knows the recording may be affected.
+private func klarityAudioDeviceChangedCallback(
+    _: AudioObjectID,
+    _: UInt32,
+    _: UnsafePointer<AudioObjectPropertyAddress>,
+    _: UnsafeMutableRawPointer?
+) -> OSStatus {
+    // Can't call MainActor methods from here, so dispatch to main queue for logging.
+    DispatchQueue.main.async {
+        let logger = AppLogger(category: "AudioRecorder")
+        logger.warn("Default audio device changed during recording — audio capture may be affected. If you changed audio devices (e.g., plugged/unplugged headphones), the recording may contain silence from the point of change.")
+    }
+    return noErr
 }
 
 // MARK: - Errors
@@ -723,6 +919,6 @@ private enum AudioRecorderError: LocalizedError {
             return "Device lookup failed (selector \(sel), OSStatus \(s))."
         case .deviceUIDFailed(let id, let s):
             return "Device UID query failed (device \(id), OSStatus \(s))."
-}
+        }
     }
 }
