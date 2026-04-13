@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -12,6 +14,7 @@ from app.models.speaker import SpeakerCluster
 from app.models.transcript import TranscriptSegment
 from app.schemas import (
     AssignSpeakerRequest,
+    ConfirmSuggestionRequest,
     MergeSpeakersRequest,
     SpeakerClusterOut,
     TranscriptSegmentOut,
@@ -83,15 +86,41 @@ def assign_speaker(
     from app.services.storage.file_layout import voice_embedding_path
     import shutil
     cluster_emb = voice_embedding_path(f"cluster_{cluster.id}")
+    person_emb = voice_embedding_path(person.id)
+
     if cluster_emb.exists():
-        person_emb = voice_embedding_path(person.id)
         try:
             shutil.copy2(str(cluster_emb), str(person_emb))
         except Exception:
             pass  # Non-fatal — recognition just won't work for this person yet
+    else:
+        # Cluster embedding doesn't exist (e.g., embedding step failed during
+        # processing). Compute it now from the cluster's audio segments.
+        from app.workers.processing_worker import _extract_cluster_audio
+        from app.services.embeddings.speaker_embedding import SpeakerEmbeddingService
+        meeting_obj = db.get(Meeting, meeting_id)
+        if meeting_obj and meeting_obj.normalized_audio_path:
+            norm_path = Path(meeting_obj.normalized_audio_path)
+            if norm_path.exists():
+                segments = (
+                    db.query(TranscriptSegment)
+                    .filter(
+                        TranscriptSegment.cluster_id == cluster.id,
+                        TranscriptSegment.meeting_id == meeting_id,
+                    )
+                    .all()
+                )
+                audio_path = _extract_cluster_audio(norm_path, segments, cluster.id)
+                if audio_path is not None:
+                    try:
+                        svc = SpeakerEmbeddingService()
+                        embedding = svc.compute_embedding(audio_path)
+                        svc.save_embedding(embedding, cluster_emb)
+                        shutil.copy2(str(cluster_emb), str(person_emb))
+                    except Exception:
+                        pass
 
     # ── Update person stats ───────────────────────────────────────────────────
-    from datetime import datetime, timezone
     from sqlalchemy import func as sqlfunc
     meeting = db.get(Meeting, meeting_id)
     if meeting and meeting.started_at:
@@ -153,8 +182,83 @@ def merge_speakers(
 @router.get("/{meeting_id}/speakers", response_model=list[SpeakerClusterOut])
 def get_speakers(meeting_id: str, db: Session = Depends(get_db)):
     """Return all speaker clusters for a meeting (detected-people panel)."""
-    return (
+    clusters = (
         db.query(SpeakerCluster)
         .filter(SpeakerCluster.meeting_id == meeting_id)
         .all()
     )
+    # Resolve suggested person names
+    suggestion_ids = {c.suggested_person_id for c in clusters if c.suggested_person_id}
+    suggested_people = {}
+    if suggestion_ids:
+        for p in db.query(Person).filter(Person.id.in_(suggestion_ids)).all():
+            suggested_people[p.id] = p.display_name
+
+    result = []
+    for c in clusters:
+        out = SpeakerClusterOut.model_validate(c)
+        if c.suggested_person_id and c.suggested_person_id in suggested_people:
+            out.suggested_person_name = suggested_people[c.suggested_person_id]
+        result.append(out)
+    return result
+
+
+@router.post("/{meeting_id}/confirm-suggestion")
+def confirm_suggestion(
+    meeting_id: str, body: ConfirmSuggestionRequest, db: Session = Depends(get_db)
+):
+    """One-click confirm: accept the AI-suggested person for a speaker cluster."""
+    cluster = db.get(SpeakerCluster, body.cluster_id)
+    if not cluster or cluster.meeting_id != meeting_id:
+        raise HTTPException(status_code=404, detail="Speaker cluster not found")
+
+    if not cluster.suggested_person_id:
+        raise HTTPException(status_code=400, detail="No suggestion for this cluster")
+
+    person = db.get(Person, cluster.suggested_person_id)
+    if not person:
+        raise HTTPException(status_code=404, detail="Suggested person not found")
+
+    # Accept the suggestion
+    cluster.assigned_person_id = cluster.suggested_person_id
+    cluster.suggested_person_id = None
+
+    # Copy cluster voice embedding as this person's voice model
+    from app.services.storage.file_layout import voice_embedding_path
+    import shutil
+    cluster_emb = voice_embedding_path(f"cluster_{cluster.id}")
+    if cluster_emb.exists():
+        person_emb = voice_embedding_path(person.id)
+        try:
+            shutil.copy2(str(cluster_emb), str(person_emb))
+        except Exception:
+            pass
+
+    # Update person stats
+    from sqlalchemy import func as sqlfunc
+    meeting = db.get(Meeting, meeting_id)
+    if meeting and meeting.started_at:
+        person.last_seen_at = meeting.started_at
+    person.meeting_count = (
+        db.query(sqlfunc.count(SpeakerCluster.meeting_id.distinct()))
+        .filter(SpeakerCluster.assigned_person_id == person.id)
+        .scalar()
+        or 0
+    )
+
+    db.commit()
+    return {"message": "Suggestion confirmed", "cluster_id": cluster.id}
+
+
+@router.post("/{meeting_id}/dismiss-suggestion")
+def dismiss_suggestion(
+    meeting_id: str, body: ConfirmSuggestionRequest, db: Session = Depends(get_db)
+):
+    """Dismiss the AI-suggested person for a speaker cluster."""
+    cluster = db.get(SpeakerCluster, body.cluster_id)
+    if not cluster or cluster.meeting_id != meeting_id:
+        raise HTTPException(status_code=404, detail="Speaker cluster not found")
+
+    cluster.suggested_person_id = None
+    db.commit()
+    return {"message": "Suggestion dismissed", "cluster_id": cluster.id}

@@ -14,6 +14,7 @@ from app.schemas.person import PersonCreate, PersonUpdate, PersonOut
 from app.schemas.speaker import (
     SpeakerClusterOut,
     AssignSpeakerRequest,
+    ConfirmSuggestionRequest,
     MergeSpeakersRequest,
 )
 from app.schemas.transcript import TranscriptSegmentOut
@@ -24,7 +25,7 @@ from app.schemas.settings import SettingsOut, SettingsPatch
 __all__ = [
     "MeetingCreate", "MeetingOut", "MeetingListOut", "MeetingPatch", "MeetingStatusUpdate",
     "PersonCreate", "PersonUpdate", "PersonOut",
-    "SpeakerClusterOut", "AssignSpeakerRequest", "MergeSpeakersRequest",
+    "SpeakerClusterOut", "AssignSpeakerRequest", "ConfirmSuggestionRequest", "MergeSpeakersRequest",
     "TranscriptSegmentOut",
     "SummaryOut", "GenerateSummaryRequest",
     "TaskOut",

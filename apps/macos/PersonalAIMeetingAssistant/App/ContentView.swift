@@ -137,11 +137,12 @@ struct ContentView: View {
                                 : AppTheme.Colors.brandPrimary)
                     .clipShape(RoundedRectangle(cornerRadius: AppTheme.Metrics.cornerRadius))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.borderless)
                 .disabled(isActivelyRecording)
                 .help(isActivelyRecording ? "A recording is already in progress" : "Start a new meeting recording")
             }
         }
+        .toolbarBackground(.hidden, for: .windowToolbar)
         .sheet(isPresented: $showingRecording) {
             RecordingView()
                 .environmentObject(recordingVM)

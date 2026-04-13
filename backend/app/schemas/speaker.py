@@ -12,6 +12,8 @@ class SpeakerClusterOut(BaseModel):
     meeting_id: str
     temp_label: str
     assigned_person_id: str | None
+    suggested_person_id: str | None = None
+    suggested_person_name: str | None = None
     confidence: float | None
     duration_seconds: float | None
     segment_count: int
@@ -22,6 +24,10 @@ class AssignSpeakerRequest(BaseModel):
     cluster_id: str
     person_id: str | None = None      # None means create a new person
     new_person_name: str | None = None  # Used when person_id is None
+
+
+class ConfirmSuggestionRequest(BaseModel):
+    cluster_id: str
 
 
 class MergeSpeakersRequest(BaseModel):

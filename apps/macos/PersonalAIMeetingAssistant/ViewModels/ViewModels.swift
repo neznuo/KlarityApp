@@ -211,6 +211,7 @@ final class MeetingDetailViewModel: ObservableObject {
     @Published var tasks: [MeetingTask] = []
     @Published var people: [Person] = []
     @Published var isLoading = false
+    @Published var isRematching = false
     @Published var errorMessage: String?
 
     /// Derived from the meeting's own status so it stays in sync with polling.
@@ -332,6 +333,51 @@ final class MeetingDetailViewModel: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    func confirmSuggestion(cluster: SpeakerCluster) async {
+        guard let meeting else { return }
+        do {
+            try await APIClient.shared.confirmSuggestion(meetingId: meeting.id, clusterId: cluster.id)
+            transcript = (try? await APIClient.shared.fetchTranscript(meetingId: meeting.id)) ?? transcript
+            speakers   = (try? await APIClient.shared.fetchSpeakers(meetingId: meeting.id)) ?? speakers
+            people     = (try? await APIClient.shared.fetchPeople()) ?? people
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func dismissSuggestion(cluster: SpeakerCluster) async {
+        guard let meeting else { return }
+        do {
+            try await APIClient.shared.dismissSuggestion(meetingId: meeting.id, clusterId: cluster.id)
+            speakers = (try? await APIClient.shared.fetchSpeakers(meetingId: meeting.id)) ?? speakers
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func recomputeSpeakerSuggestions() async {
+        guard let meeting else { return }
+        isRematching = true
+        do {
+            try await APIClient.shared.recomputeSpeakerSuggestions(meetingId: meeting.id)
+            // Poll until matching completes (status leaves matching_speakers)
+            for _ in 0..<30 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                if let updated = try? await APIClient.shared.fetchMeeting(id: meeting.id) {
+                    self.meeting = updated
+                    if updated.status != .matchingSpeakers { break }
+                }
+            }
+            // Refresh speakers and people with the new suggestions
+            speakers = (try? await APIClient.shared.fetchSpeakers(meetingId: meeting.id)) ?? speakers
+            people   = (try? await APIClient.shared.fetchPeople()) ?? people
+            transcript = (try? await APIClient.shared.fetchTranscript(meetingId: meeting.id)) ?? transcript
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        isRematching = false
     }
 }
 

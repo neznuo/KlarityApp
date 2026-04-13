@@ -25,6 +25,9 @@ class SpeakerCluster(Base):
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
     segment_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    suggested_person_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("people.id"), nullable=True
+    )
     duplicate_group_hint: Mapped[str | None] = mapped_column(String, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
