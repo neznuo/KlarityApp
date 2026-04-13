@@ -189,6 +189,7 @@ struct ContentView: View {
 /// Adapts automatically to light and dark mode via system colors.
 struct RecordingStatusPill: View {
     @EnvironmentObject var vm: RecordingViewModel
+    @State private var hasWaitedLongEnough = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -248,11 +249,19 @@ struct RecordingStatusPill: View {
             // Divider ─────────────────────────────────────────────────────────
             divider
 
-            // 🎤 Mic icon ─────────────────────────────────────────────────────
-            Image(systemName: "mic.fill")
-                .font(.system(size: 13))
-                .foregroundStyle(AppTheme.Colors.tertiaryText)
-                .padding(.horizontal, 14)
+            // 🔊🎤 Audio source indicators ─────────────────────────────────────
+            HStack(spacing: 10) {
+                Image(systemName: "speaker.wave.2.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(audioSourceColor(isActive: vm.hasSysAudio))
+                    .help(vm.hasSysAudio ? "System audio: Active" : "System audio: Waiting\u{2026}")
+
+                Image(systemName: "mic.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(audioSourceColor(isActive: vm.hasMicAudio))
+                    .help(vm.hasMicAudio ? "Microphone: Active" : "Microphone: Waiting\u{2026}")
+            }
+            .padding(.horizontal, 14)
         }
         .frame(height: 44)
         .background(
@@ -264,6 +273,17 @@ struct RecordingStatusPill: View {
             Capsule()
                 .stroke(AppTheme.Colors.subtleBorder, lineWidth: 0.5)
         )
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                hasWaitedLongEnough = true
+            }
+        }
+    }
+
+    private func audioSourceColor(isActive: Bool) -> Color {
+        if isActive { return AppTheme.Colors.accentGreen }
+        if hasWaitedLongEnough { return AppTheme.Colors.accentRed }
+        return AppTheme.Colors.tertiaryText
     }
 
     private var divider: some View {

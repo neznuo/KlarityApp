@@ -39,6 +39,11 @@ final class AudioRecorder: NSObject, ObservableObject {
     @Published var currentFilePath: URL?
     @Published var errorMessage: String?
 
+    // Audio source status — observable by views. Set from MainActor.
+    // These mirror the lock-protected hasSysAudioLock/hasMicAudioLock for SwiftUI binding.
+    @Published private(set) var hasSysAudioSource: Bool = false
+    @Published private(set) var hasMicAudioSource: Bool = false
+
     // MARK: System audio (Core Audio Tap)
 
     private var tapID: AudioObjectID = AudioObjectID(kAudioObjectUnknown)
@@ -59,6 +64,9 @@ final class AudioRecorder: NSObject, ObservableObject {
     private var micAudioFile: AVAudioFile?
     private var micTempURL: URL?
     private let micWriterQueue = DispatchQueue(label: "com.klarity.micWriter", qos: .userInitiated)
+    // Thread-safe wrapper for micConverter — accessed from both the AVAudioEngine tap
+    // callback (audio thread) and MainActor (setup/teardown).
+    private let micConverterLock = OSAllocatedUnfairLock<AVAudioConverter?>(initialState: nil)
 
     // MARK: Shared state (thread-safe)
 
@@ -219,6 +227,8 @@ final class AudioRecorder: NSObject, ObservableObject {
 
         hasSysAudioLock.withLock { $0 = false }
         hasMicAudioLock.withLock { $0 = false }
+        hasSysAudioSource = false
+        hasMicAudioSource = false
         logger.info("Recording saved: \(outputURL.path)")
         return outputURL
     }
@@ -413,34 +423,59 @@ final class AudioRecorder: NSObject, ObservableObject {
         // Calling start() first leaves the engine graph empty → "inputNode != nullptr" crash.
         let inputNode = engine.inputNode
 
-        // Install tap with nil format BEFORE engine.start().
-        // AVAudioEngine will negotiate the correct hardware format during start.
-        // Converter is created lazily on the first callback using buffer.format, which is
-        // always the true delivered format regardless of what outputFormat() reports pre-start.
-        inputNode.installTap(onBus: 0, bufferSize: 4096, format: nil, block: { [weak self] buffer, _ in
+        // Use the input node's reported output format as the tap format.
+        // Specifying an explicit format (instead of nil) ensures the tap delivers buffers in a
+        // known format that AVAudioConverter can always handle. With format: nil, the tap
+        // may deliver non-interleaved multi-channel Float32 that AVAudioConverter silently
+        // refuses to convert to interleaved Int16, causing ALL mic buffers to be dropped.
+        // After engine.start(), inputNode.outputFormat(forBus:0) returns the true hardware
+        // format. Before start, it may return 0Hz — so we fall back to a safe default.
+        var tapFormat = inputNode.outputFormat(forBus: 0)
+        if tapFormat.sampleRate == 0 || tapFormat.channelCount == 0 {
+            // Engine not yet started — use a safe default. The engine will renegotiate
+            // the actual hardware format during start(), and the tap adapts automatically.
+            tapFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48000, channels: 1, interleaved: false)!
+        }
+        logger.info("Mic tap format: \(tapFormat.commonFormat.rawValue), \(tapFormat.sampleRate)Hz, \(tapFormat.channelCount)ch, interleaved=\(tapFormat.isInterleaved)")
+
+        // Create the converter upfront using the known tap format, before the tap fires.
+        // This avoids the silent-failure path where lazy converter creation returns nil
+        // and every buffer is dropped for the entire recording.
+        guard let preConverter = AVAudioConverter(from: tapFormat, to: outputFormat) else {
+            logger.error("Cannot create mic converter (\(tapFormat.commonFormat.rawValue) \(tapFormat.sampleRate)Hz \(tapFormat.channelCount)ch → \(outputFormat.commonFormat.rawValue) \(outputFormat.sampleRate)Hz \(outputFormat.channelCount)ch) — recording system audio only")
+            micAudioFile = nil
+            return
+        }
+        micConverterLock.withLock { $0 = preConverter }
+        micConverter = preConverter
+
+        inputNode.installTap(onBus: 0, bufferSize: 4096, format: tapFormat, block: { [weak self] buffer, _ in
             guard let self else { return }
             let paused = self.isPausedLock.withLock { $0 }
             guard !paused, buffer.frameLength > 0 else { return }
 
-            // Lazy one-time converter creation using the actual delivered buffer format.
-            if self.micConverter == nil {
-                self.micConverter = AVAudioConverter(from: buffer.format, to: outputFormat)
-            }
-            guard let converter = self.micConverter else { return }
+            let converter = self.micConverterLock.withLock { $0 }
+            guard let converter else { return }
 
             let ratio  = outputFormat.sampleRate / buffer.format.sampleRate
             let outCap = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 4
             guard let outBuf = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: outCap) else { return }
 
+            var error: NSError?
             var inputUsed = false
-            converter.convert(to: outBuf, error: nil) { _, status in
+            converter.convert(to: outBuf, error: &error) { _, status in
                 if inputUsed { status.pointee = .noDataNow; return nil }
                 status.pointee = .haveData; inputUsed = true
                 return buffer
             }
+            if let convertError = error {
+                self.logger.error("Mic converter error: \(convertError.localizedDescription)")
+                return
+            }
             guard outBuf.frameLength > 0 else { return }
 
             self.hasMicAudioLock.withLock { $0 = true }
+            DispatchQueue.main.async { self.hasMicAudioSource = true }
             let fileRef = self.micAudioFile
             self.micWriterQueue.async { try? fileRef?.write(from: outBuf) }
         })
@@ -512,6 +547,7 @@ final class AudioRecorder: NSObject, ObservableObject {
         }
 
         hasSysAudioLock.withLock { $0 = true }
+        DispatchQueue.main.async { self.hasSysAudioSource = true }
 
         // Wrap in AVAudioPCMBuffer and convert to 16kHz int16
         guard let inputBuf = AVAudioPCMBuffer(pcmFormat: monoFmt,
@@ -546,6 +582,9 @@ final class AudioRecorder: NSObject, ObservableObject {
             Task { @MainActor in
                 let hasSys = self.hasSysAudioLock.withLock { $0 }
                 let hasMic = self.hasMicAudioLock.withLock { $0 }
+                // Mirror lock values to @Published properties for view binding
+                self.hasSysAudioSource = hasSys
+                self.hasMicAudioSource = hasMic
                 if !hasSys {
                     self.logger.warn("Health check: No system audio received after 3s — check 'System Audio Recording' permission in System Settings → Privacy")
                 }
@@ -681,7 +720,14 @@ final class AudioRecorder: NSObject, ObservableObject {
                 try micFile.read(into: micBuf, frameCount: micRead)
             }
 
-            // Average sys + mic sample by sample
+            // Mix sys + mic with mic boost
+            // System audio (Zoom/Meet output) is loud; mic is naturally quiet.
+            // Boost mic by ~9.5 dB (3×) so the local speaker is audible over the
+            // louder system audio, then weight the mix 60/40 sys/mic to keep
+            // system audio dominant while ensuring the mic is clearly heard.
+            let micGain: Float32 = 3.0
+            let sysWeight: Float32 = 0.6
+            let micWeight: Float32 = 0.4
             mixBuf.frameLength = toRead
             let mixPtr = mixBuf.floatChannelData![0]
             let sysPtr = sysBuf.floatChannelData![0]
@@ -689,7 +735,8 @@ final class AudioRecorder: NSObject, ObservableObject {
             for i in 0..<Int(toRead) {
                 let s = i < sysRead ? sysPtr[i] : 0.0
                 let m = i < micRead ? micPtr[i] : 0.0
-                mixPtr[i] = (s + m) * 0.5
+                let mixed = s * sysWeight + (m * micGain) * micWeight
+                mixPtr[i] = min(mixed, 1.0) // clamp to prevent clipping
             }
 
             // Convert mixed float32 chunk → int16 and write
@@ -743,6 +790,7 @@ final class AudioRecorder: NSObject, ObservableObject {
         audioEngine?.stop()
         audioEngine  = nil
         micConverter = nil
+        micConverterLock.withLock { $0 = nil }
     }
 
     private func teardownAll() {
@@ -755,6 +803,8 @@ final class AudioRecorder: NSObject, ObservableObject {
         micTempURL = nil
         hasSysAudioLock.withLock { $0 = false }
         hasMicAudioLock.withLock { $0 = false }
+        hasSysAudioSource = false
+        hasMicAudioSource = false
     }
 
     // MARK: - Device UID helpers

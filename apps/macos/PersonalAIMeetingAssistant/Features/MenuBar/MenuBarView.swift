@@ -198,6 +198,7 @@ struct MenuBarContentView: View {
 
 struct MenuBarRecordingSection: View {
     @EnvironmentObject var vm: RecordingViewModel
+    @State private var hasWaitedLongEnough = false
 
     var body: some View {
         VStack(spacing: 8) {
@@ -256,9 +257,19 @@ struct MenuBarRecordingSection: View {
 
                 Rectangle().fill(AppTheme.Colors.border).frame(width: 1, height: 18).padding(.horizontal, 4)
 
-                Image(systemName: "mic.fill")
-                    .font(.system(size: 12)).foregroundStyle(AppTheme.Colors.tertiaryText)
-                    .padding(.trailing, 14)
+                // 🔊🎤 Audio source indicators
+                HStack(spacing: 8) {
+                    Image(systemName: "speaker.wave.2.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(audioSourceColor(isActive: vm.hasSysAudio))
+                        .help(vm.hasSysAudio ? "System audio: Active" : "System audio: Waiting\u{2026}")
+
+                    Image(systemName: "mic.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(audioSourceColor(isActive: vm.hasMicAudio))
+                        .help(vm.hasMicAudio ? "Microphone: Active" : "Microphone: Waiting\u{2026}")
+                }
+                .padding(.trailing, 14)
 
                 Spacer(minLength: 0)
             }
@@ -272,6 +283,17 @@ struct MenuBarRecordingSection: View {
             .padding(.horizontal, 14)
             .padding(.bottom, 10)
         }
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                hasWaitedLongEnough = true
+            }
+        }
+    }
+
+    private func audioSourceColor(isActive: Bool) -> Color {
+        if isActive { return AppTheme.Colors.accentGreen }
+        if hasWaitedLongEnough { return AppTheme.Colors.accentRed }
+        return AppTheme.Colors.tertiaryText
     }
 }
 
