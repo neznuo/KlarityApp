@@ -122,6 +122,8 @@ final class RecordingViewModel: ObservableObject {
     var isRecording: Bool { recorder.state == .recording }
     var isPaused:    Bool { recorder.state == .paused }
     var isPreparing: Bool { recorder.state == .preparing }
+    var hasSysAudio: Bool { recorder.hasSysAudioSource }
+    var hasMicAudio: Bool { recorder.hasMicAudioSource }
 
     func startNewMeeting(calendarEventId: String? = nil, calendarSource: String? = nil) async {
         guard !meetingTitle.trimmingCharacters(in: .whitespaces).isEmpty else {
