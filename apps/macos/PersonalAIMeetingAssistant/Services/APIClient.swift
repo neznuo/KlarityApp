@@ -168,6 +168,20 @@ final class APIClient {
         try await postData("/meetings/\(meetingId)/merge-speakers", body: data)
     }
 
+    func confirmSuggestion(meetingId: String, clusterId: String) async throws {
+        let body = ["cluster_id": clusterId]
+        let _: EmptyResponse = try await post("/meetings/\(meetingId)/confirm-suggestion", body: body)
+    }
+
+    func dismissSuggestion(meetingId: String, clusterId: String) async throws {
+        let body = ["cluster_id": clusterId]
+        let _: EmptyResponse = try await post("/meetings/\(meetingId)/dismiss-suggestion", body: body)
+    }
+
+    func recomputeSpeakerSuggestions(meetingId: String) async throws {
+        let _: EmptyResponse = try await post("/meetings/\(meetingId)/recompute-speaker-suggestions", body: EmptyBody())
+    }
+
     // MARK: - Summary
 
     func fetchSummary(meetingId: String) async throws -> MeetingSummary? {

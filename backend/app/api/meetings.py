@@ -103,8 +103,49 @@ def delete_meeting(meeting_id: str, db: Session = Depends(get_db)):
     meeting = db.get(Meeting, meeting_id)
     if not meeting:
         raise HTTPException(status_code=404, detail="Meeting not found")
+
+    # Delete related rows (no FK cascades defined on Meeting)
+    from app.models.speaker import SpeakerCluster
+    from app.models.transcript import TranscriptSegment
+    from app.models.summary import Summary
+    from app.models.task import Task
+
+    clusters = (
+        db.query(SpeakerCluster)
+        .filter(SpeakerCluster.meeting_id == meeting_id)
+        .all()
+    )
+    for cluster in clusters:
+        db.query(TranscriptSegment).filter(
+            TranscriptSegment.cluster_id == cluster.id
+        ).delete(synchronize_session=False)
+    db.query(SpeakerCluster).filter(
+        SpeakerCluster.meeting_id == meeting_id
+    ).delete(synchronize_session=False)
+    db.query(Summary).filter(Summary.meeting_id == meeting_id).delete(synchronize_session=False)
+    db.query(Task).filter(Task.meeting_id == meeting_id).delete(synchronize_session=False)
+
     db.delete(meeting)
     db.commit()
+
+    # Delete meeting folder and cluster voice embeddings from disk
+    import shutil
+    from pathlib import Path
+    from app.core.config import settings
+
+    meeting_dir = settings.meetings_path / meeting_id
+    if meeting_dir.exists():
+        shutil.rmtree(meeting_dir, ignore_errors=True)
+
+    # Delete cluster embedding files (voices/cluster_{id}.npy)
+    voices_dir = settings.voices_path
+    for cluster in clusters:
+        emb = voices_dir / f"cluster_{cluster.id}.npy"
+        if emb.exists():
+            try:
+                emb.unlink()
+            except Exception:
+                pass
 
 
 @router.post("/{meeting_id}/process")

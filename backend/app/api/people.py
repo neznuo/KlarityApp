@@ -189,5 +189,12 @@ def _rebuild_person_embedding(person_id: str) -> None:
         svc.save_embedding(embedding, voice_embedding_path(person_id))
 
         shutil.rmtree(tmp, ignore_errors=True)
+    except Exception as exc:
+        import structlog
+        structlog.get_logger().warning(
+            "rebuild_embedding_failed",
+            person_id=person_id,
+            error=str(exc),
+        )
     finally:
         db.close()

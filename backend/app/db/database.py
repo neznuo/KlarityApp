@@ -55,3 +55,12 @@ def init_db() -> None:
                 conn.commit()
             except OperationalError:
                 pass  # Column already exists
+
+        # SQLite migration: add suggested_person_id to speaker_clusters if missing
+        try:
+            conn.execute(
+                text("ALTER TABLE speaker_clusters ADD COLUMN suggested_person_id VARCHAR REFERENCES people(id)")
+            )
+            conn.commit()
+        except OperationalError:
+            pass  # Column already exists

@@ -158,6 +158,8 @@ struct SpeakerCluster: Identifiable, Codable {
     let meetingId: String
     var tempLabel: String
     var assignedPersonId: String?
+    var suggestedPersonId: String?
+    var suggestedPersonName: String?
     var confidence: Double?
     var durationSeconds: Double?
     var segmentCount: Int
@@ -168,9 +170,25 @@ struct SpeakerCluster: Identifiable, Codable {
         case meetingId = "meeting_id"
         case tempLabel = "temp_label"
         case assignedPersonId = "assigned_person_id"
+        case suggestedPersonId = "suggested_person_id"
+        case suggestedPersonName = "suggested_person_name"
         case durationSeconds = "duration_seconds"
         case segmentCount = "segment_count"
         case duplicateGroupHint = "duplicate_group_hint"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        meetingId = try c.decode(String.self, forKey: .meetingId)
+        tempLabel = try c.decode(String.self, forKey: .tempLabel)
+        assignedPersonId = try c.decodeIfPresent(String.self, forKey: .assignedPersonId)
+        suggestedPersonId = try c.decodeIfPresent(String.self, forKey: .suggestedPersonId)
+        suggestedPersonName = try c.decodeIfPresent(String.self, forKey: .suggestedPersonName)
+        confidence = try c.decodeIfPresent(Double.self, forKey: .confidence)
+        durationSeconds = try c.decodeIfPresent(Double.self, forKey: .durationSeconds)
+        segmentCount = try c.decode(Int.self, forKey: .segmentCount)
+        duplicateGroupHint = try c.decodeIfPresent(String.self, forKey: .duplicateGroupHint)
     }
 }
 

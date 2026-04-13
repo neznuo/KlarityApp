@@ -62,9 +62,9 @@ class Settings(BaseSettings):
     default_llm_model: str = "llama3"
 
     # Speaker Matching Thresholds
-    speaker_suggest_threshold: float = 0.75
-    speaker_auto_assign_threshold: float = 0.90
-    speaker_duplicate_threshold: float = 0.82
+    speaker_suggest_threshold: float = 0.65
+    speaker_auto_assign_threshold: float = 0.80
+    speaker_duplicate_threshold: float = 0.75
 
     # Calendar integrations (connection state stored in-memory; updated by Swift via PATCH /settings)
     google_calendar_connected: bool = False

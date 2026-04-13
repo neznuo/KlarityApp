@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Transcript tab view — scrollable list of segments with inline chat-style speaker labels.
+/// Transcript tab view — speaker strip at top + scrollable segments below.
 struct TranscriptView: View {
     let segments: [TranscriptSegment]
     let speakers: [SpeakerCluster]
@@ -9,10 +9,23 @@ struct TranscriptView: View {
     var onSeek: (Int) -> Void
     var onAssign: (SpeakerCluster, Person) -> Void
     var onCreateAndAssign: (SpeakerCluster, String) -> Void
+    var onConfirmSuggestion: (SpeakerCluster) -> Void
+    var onDismissSuggestion: (SpeakerCluster) -> Void
     var onRetry: (() -> Void)?
 
     @State private var newPersonInputFor: SpeakerCluster? = nil
     @State private var newPersonName: String = ""
+
+    /// First segment timestamp per cluster, for seeking.
+    private var firstSegmentMsByCluster: [String: Int] {
+        var map: [String: Int] = [:]
+        for seg in segments {
+            if map[seg.clusterId ?? ""] == nil {
+                map[seg.clusterId ?? ""] = seg.startMs
+            }
+        }
+        return map
+    }
 
     var body: some View {
         Group {
@@ -44,29 +57,57 @@ struct TranscriptView: View {
                     Spacer()
                 }
             } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 24) {
-                        ForEach(segments) { seg in
-                            TranscriptRowView(
-                                segment: seg,
-                                cluster: speakers.first(where: { $0.id == seg.clusterId }),
-                                people: people,
-                                onSeek: { onSeek(seg.startMs) },
-                                onAssign: { person in
-                                    if let c = speakers.first(where: { $0.id == seg.clusterId }) {
-                                        onAssign(c, person)
-                                    }
-                                },
-                                onCreateNew: {
-                                    if let c = speakers.first(where: { $0.id == seg.clusterId }) {
-                                        newPersonInputFor = c
-                                    }
-                                }
-                            )
-                        }
+                VStack(spacing: 0) {
+                    // ── Speaker Strip ──────────────────────────────────────
+                    if !speakers.isEmpty {
+                        SpeakerStrip(
+                            speakers: speakers,
+                            people: people,
+                            firstSegmentMsByCluster: firstSegmentMsByCluster,
+                            onSeek: onSeek,
+                            onAssign: onAssign,
+                            onCreateAndAssign: onCreateAndAssign,
+                            onConfirmSuggestion: onConfirmSuggestion,
+                            onDismissSuggestion: onDismissSuggestion
+                        )
+                        Divider().opacity(0.4)
                     }
-                    .padding(32)
-                    .frame(maxWidth: 800, alignment: .leading) // Constrain width for readability
+
+                    // ── Transcript Segments ─────────────────────────────────
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 24) {
+                            ForEach(segments) { seg in
+                                TranscriptRowView(
+                                    segment: seg,
+                                    cluster: speakers.first(where: { $0.id == seg.clusterId }),
+                                    people: people,
+                                    onSeek: { onSeek(seg.startMs) },
+                                    onAssign: { person in
+                                        if let c = speakers.first(where: { $0.id == seg.clusterId }) {
+                                            onAssign(c, person)
+                                        }
+                                    },
+                                    onCreateNew: {
+                                        if let c = speakers.first(where: { $0.id == seg.clusterId }) {
+                                            newPersonInputFor = c
+                                        }
+                                    },
+                                    onConfirmSuggestion: {
+                                        if let c = speakers.first(where: { $0.id == seg.clusterId }) {
+                                            onConfirmSuggestion(c)
+                                        }
+                                    },
+                                    onDismissSuggestion: {
+                                        if let c = speakers.first(where: { $0.id == seg.clusterId }) {
+                                            onDismissSuggestion(c)
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                        .padding(32)
+                        .frame(maxWidth: 800, alignment: .leading) // Constrain width for readability
+                    }
                 }
             }
         }
@@ -105,6 +146,161 @@ struct TranscriptView: View {
     }
 }
 
+// MARK: - Speaker Strip
+
+private struct SpeakerStrip: View {
+    let speakers: [SpeakerCluster]
+    let people: [Person]
+    let firstSegmentMsByCluster: [String: Int]
+    var onSeek: (Int) -> Void
+    var onAssign: (SpeakerCluster, Person) -> Void
+    var onCreateAndAssign: (SpeakerCluster, String) -> Void
+    var onConfirmSuggestion: (SpeakerCluster) -> Void
+    var onDismissSuggestion: (SpeakerCluster) -> Void
+
+    @State private var hoveredClusterId: String?
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(speakers) { cluster in
+                    speakerChip(for: cluster)
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 10)
+        }
+    }
+
+    @ViewBuilder
+    private func speakerChip(for cluster: SpeakerCluster) -> some View {
+        let resolvedName = displayName(for: cluster)
+        let firstMs = firstSegmentMsByCluster[cluster.id] ?? 0
+
+        HStack(spacing: 6) {
+            // Avatar
+            ZStack {
+                Circle()
+                    .fill(avatarColor(for: resolvedName).opacity(0.18))
+                    .frame(width: 26, height: 26)
+                Text(initials(for: resolvedName))
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(avatarColor(for: resolvedName))
+            }
+
+            // Name + status
+            if let personId = cluster.assignedPersonId,
+               let person = people.first(where: { $0.id == personId }) {
+                // ── Assigned ──
+                Text(person.displayName)
+                    .font(AppTheme.Fonts.caption)
+                    .foregroundStyle(AppTheme.Colors.primaryText)
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(AppTheme.Colors.accentGreen)
+            } else if let suggestedName = cluster.suggestedPersonName,
+                      let confidence = cluster.confidence {
+                // ── Suggested ──
+                Text("Probably \(suggestedName) (\(Int(confidence * 100))%)")
+                    .font(AppTheme.Fonts.caption)
+                    .foregroundStyle(AppTheme.Colors.brandPrimary)
+                Button {
+                    onConfirmSuggestion(cluster)
+                } label: {
+                    Text("Confirm")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(AppTheme.Colors.brandPrimary)
+                        .clipShape(RoundedRectangle(cornerRadius: 3))
+                }
+                .buttonStyle(.plain)
+                Button {
+                    onDismissSuggestion(cluster)
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(AppTheme.Colors.tertiaryText)
+                }
+                .buttonStyle(.plain)
+            } else {
+                // ── Unmatched ──
+                Text(cluster.tempLabel)
+                    .font(AppTheme.Fonts.caption)
+                    .foregroundStyle(AppTheme.Colors.secondaryText)
+                Circle()
+                    .fill(AppTheme.Colors.accentOrange)
+                    .frame(width: 6, height: 6)
+
+                if hoveredClusterId == cluster.id {
+                    Menu {
+                        Section("Assign to…") {
+                            ForEach(people) { person in
+                                Button(person.displayName) { onAssign(cluster, person) }
+                            }
+                            Divider()
+                            Button("Create new person…") {
+                                // Can't use sheet from Menu — tap the row instead
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "person.badge.plus")
+                            .font(.system(size: 9))
+                            .foregroundStyle(AppTheme.Colors.secondaryText)
+                    }
+                    .menuStyle(.borderlessButton)
+                }
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(hoveredClusterId == cluster.id ? AppTheme.Colors.hoverFill : AppTheme.Colors.cardBackground)
+        )
+        .onHover { hovering in
+            hoveredClusterId = hovering ? cluster.id : nil
+        }
+        .onTapGesture {
+            onSeek(firstMs)
+        }
+    }
+
+    private func displayName(for cluster: SpeakerCluster) -> String {
+        if let pid = cluster.assignedPersonId,
+           let person = people.first(where: { $0.id == pid }) {
+            return person.displayName
+        }
+        if let name = cluster.suggestedPersonName {
+            return name
+        }
+        return cluster.tempLabel
+    }
+
+    private func initials(for name: String) -> String {
+        let components = name.split(separator: " ")
+        if components.count >= 2 {
+            return String(components[0].prefix(1) + components[1].prefix(1)).uppercased()
+        } else if let first = components.first {
+            return String(first.prefix(1)).uppercased()
+        }
+        return "?"
+    }
+
+    private func avatarColor(for name: String) -> Color {
+        let colors: [Color] = [
+            Color.indigo, Color.teal,
+            Color(red: 0.85, green: 0.35, blue: 0.25),
+            Color(red: 0.25, green: 0.65, blue: 0.55),
+            Color.purple,
+            Color(red: 0.70, green: 0.45, blue: 0.10),
+        ]
+        let index = abs(name.hashValue) % colors.count
+        return colors[index]
+    }
+}
+
 // MARK: - Row Components
 
 struct TranscriptRowView: View {
@@ -114,6 +310,8 @@ struct TranscriptRowView: View {
     var onSeek: () -> Void
     var onAssign: (Person) -> Void
     var onCreateNew: () -> Void
+    var onConfirmSuggestion: () -> Void
+    var onDismissSuggestion: () -> Void
 
     @State private var isHovered = false
 
@@ -144,6 +342,42 @@ struct TranscriptRowView: View {
                     Text(speakerName)
                         .font(AppTheme.Fonts.listTitle)
                         .foregroundStyle(AppTheme.Colors.primaryText)
+
+                    // Suggestion badge: "Probably Colin Graham (87%)"
+                    if let cluster = cluster,
+                       cluster.assignedPersonId == nil,
+                       let suggestedName = cluster.suggestedPersonName,
+                       let confidence = cluster.confidence {
+                        HStack(spacing: 4) {
+                            Text("Probably \(suggestedName) (\(Int(confidence * 100))%)")
+                                .font(AppTheme.Fonts.caption)
+                                .foregroundStyle(AppTheme.Colors.brandPrimary)
+                            Button {
+                                onConfirmSuggestion()
+                            } label: {
+                                Text("Confirm")
+                                    .font(AppTheme.Fonts.caption)
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(AppTheme.Colors.brandPrimary)
+                                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                            }
+                            .buttonStyle(.plain)
+                            Button {
+                                onDismissSuggestion()
+                            } label: {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundStyle(AppTheme.Colors.tertiaryText)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(AppTheme.Colors.brandLight)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
 
                     Button(action: onSeek) {
                         Text(formatTimestamp(segment.startMs))

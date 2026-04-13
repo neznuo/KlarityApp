@@ -28,6 +28,31 @@ struct MeetingDetailView: View {
                 tabButton(title: "Notes", tab: .summary)
                 tabButton(title: "Transcript", tab: .transcript)
                 Spacer()
+                if selectedTab == .transcript && !vm.speakers.isEmpty {
+                    Button {
+                        Task { await vm.recomputeSpeakerSuggestions() }
+                    } label: {
+                        HStack(spacing: 5) {
+                            if vm.isRematching {
+                                ProgressView()
+                                    .scaleEffect(0.6)
+                                    .frame(width: 10, height: 10)
+                            } else {
+                                Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 10))
+                            }
+                            Text(vm.isRematching ? "Matching…" : "Re-match")
+                                .font(AppTheme.Fonts.caption)
+                        }
+                        .foregroundStyle(AppTheme.Colors.brandPrimary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(AppTheme.Colors.brandLight)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(vm.isRematching)
+                    .help("Re-run speaker matching against your contacts library")
+                }
             }
             .padding(.horizontal, 20)
             .background(AppTheme.Colors.background)
@@ -37,7 +62,7 @@ struct MeetingDetailView: View {
             // ── Tab Content ───────────────────────────────────────────────
             ZStack {
                 AppTheme.Colors.background.ignoresSafeArea()
-                
+
                 switch selectedTab {
                 case .transcript:
                     TranscriptView(
@@ -52,10 +77,29 @@ struct MeetingDetailView: View {
                         onCreateAndAssign: { cluster, name in
                             Task { await vm.createAndAssign(cluster: cluster, name: name) }
                         },
+                        onConfirmSuggestion: { cluster in
+                            Task { await vm.confirmSuggestion(cluster: cluster) }
+                        },
+                        onDismissSuggestion: { cluster in
+                            Task { await vm.dismissSuggestion(cluster: cluster) }
+                        },
                         onRetry: {
                             Task { await vm.retryProcessing() }
                         }
                     )
+                    .overlay {
+                        if vm.isRematching {
+                            VStack(spacing: 10) {
+                                ProgressView()
+                                    .scaleEffect(1.2)
+                                Text("Matching speakers…")
+                                    .font(AppTheme.Fonts.body)
+                                    .foregroundStyle(AppTheme.Colors.secondaryText)
+                            }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .background(AppTheme.Colors.background.opacity(0.8))
+                        }
+                    }
                 case .summary:
                     SummaryView(
                         summary: vm.summary,

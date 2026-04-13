@@ -315,8 +315,13 @@ def run_speaker_matching_step(meeting_id: str, db: Session | None = None) -> Non
                     emb_path = voice_embedding_path(f"cluster_{cluster.id}")
                     embedding_svc.save_embedding(embedding, emb_path)
                     cluster_embeddings[cluster.id] = embedding
-                except Exception:
-                    pass  # Non-fatal — skip this cluster
+                except Exception as exc:
+                    import structlog
+                    structlog.get_logger().warning(
+                        "speaker_embedding_failed",
+                        cluster_id=cluster.id,
+                        error=str(exc),
+                    )
 
             # Load known person embeddings
             from app.models.person import Person
@@ -340,9 +345,10 @@ def run_speaker_matching_step(meeting_id: str, db: Session | None = None) -> Non
                     )
                     if best_id and sim >= settings.speaker_auto_assign_threshold:
                         cluster.assigned_person_id = best_id
+                        cluster.suggested_person_id = None
                         cluster.confidence = sim
                     elif best_id and sim >= settings.speaker_suggest_threshold:
-                        # Just store the suggestion in confidence; frontend shows it
+                        cluster.suggested_person_id = best_id
                         cluster.confidence = sim
 
             # Detect duplicate clusters
@@ -355,6 +361,10 @@ def run_speaker_matching_step(meeting_id: str, db: Session | None = None) -> Non
 
             db.commit()
             _finish_job(job, db)
+
+            # When called standalone (recompute), transition to transcript_ready
+            if meeting.status == "matching_speakers":
+                _update_meeting_status(meeting_id, "transcript_ready", db)
 
         except Exception as exc:
             _finish_job(job, db, error=str(exc))
