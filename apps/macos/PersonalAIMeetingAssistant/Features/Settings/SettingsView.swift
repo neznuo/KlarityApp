@@ -154,6 +154,66 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section {
+                Toggle("Enable meeting detection", isOn: Binding(
+                    get: { appState.meetingDetector.isEnabled },
+                    set: { appState.meetingDetector.isEnabled = $0 }
+                ))
+                .help("When enabled, Klarity monitors for upcoming meetings and shows a notification to start recording.")
+
+                Toggle("Detect calendar meetings", isOn: Binding(
+                    get: { appState.meetingDetector.detectCalendar },
+                    set: { appState.meetingDetector.detectCalendar = $0 }
+                ))
+                .disabled(!appState.meetingDetector.isEnabled || !(CalendarService.shared.isConnected(.google) || CalendarService.shared.isConnected(.microsoft)))
+
+                Toggle("Detect audio/video calls", isOn: Binding(
+                    get: { appState.meetingDetector.detectCalls },
+                    set: { appState.meetingDetector.detectCalls = $0 }
+                ))
+                .disabled(!appState.meetingDetector.isEnabled)
+
+                if appState.meetingDetector.detectCalls && !appState.meetingDetector.isAccessibilityGranted {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                        Text("Accessibility access required for call detection")
+                            .font(AppTheme.Fonts.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Grant Access") {
+                            appState.meetingDetector.openAccessibilityPreferences()
+                        }
+                        .font(AppTheme.Fonts.caption)
+                    }
+                }
+
+                Picker("Notify before meeting", selection: Binding(
+                    get: { appState.meetingDetector.leadTime },
+                    set: { appState.meetingDetector.leadTime = $0 }
+                )) {
+                    ForEach(NotificationLeadTime.allCases, id: \.rawValue) { lt in
+                        Text(lt.label).tag(lt)
+                    }
+                }
+                .disabled(!appState.meetingDetector.isEnabled || !appState.meetingDetector.detectCalendar)
+
+                Button {
+                    // Trigger a manual detection check for testing
+                    appState.meetingDetector.checkCalendarSignal()
+                    appState.meetingDetector.checkWindowTitleSignal()
+                } label: {
+                    Label("Test Meeting Detection", systemImage: "bell.fill")
+                }
+                .disabled(!appState.meetingDetector.isEnabled)
+                .help("Manually trigger a detection check to test the notification.")
+            } header: {
+                Text("Meeting Detection")
+            } footer: {
+                Text("Klarity monitors for upcoming meetings via your connected calendars and detects active calls through audio device changes and window titles (requires Accessibility access).")
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Storage") {
                 TextField("Storage Directory", text: $vm.settings.baseStorageDir)
                     .help("Base directory where meetings, voices, and exports are stored.")

@@ -30,6 +30,9 @@
 		E5F6A7B8C9D0E1F2A3B4C5D6 /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6A7B8C9D0E1F2A3B4C5D6E7 /* MenuBarView.swift */; };
 		F1E2D3C4B5A697886950A001 /* CalendarService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1D2C3B4A596877869504001 /* CalendarService.swift */; };
 		BBBB0000000000000000000B /* ActionItemsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA0000000000000000000A /* ActionItemsView.swift */; };
+		FFA1DE100000000000000002 /* MeetingDetectionModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFA1DE100000000000000001 /* MeetingDetectionModels.swift */; };
+		FFA1DE100000000000000004 /* MeetingDetectorService.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFA1DE100000000000000003 /* MeetingDetectorService.swift */; };
+		FFA1DE100000000000000006 /* UpcomingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFA1DE100000000000000005 /* UpcomingView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -59,6 +62,9 @@
 		CB8A27630A160812A4FA6C8F /* KlarityApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KlarityApp.swift; sourceTree = "<group>"; };
 		DCE9450AD3F25B91E869969B /* BackendProcessManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackendProcessManager.swift; sourceTree = "<group>"; };
 		AAAA0000000000000000000A /* ActionItemsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActionItemsView.swift; sourceTree = "<group>"; };
+		FFA1DE100000000000000001 /* MeetingDetectionModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetingDetectionModels.swift; sourceTree = "<group>"; };
+		FFA1DE100000000000000003 /* MeetingDetectorService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetingDetectorService.swift; sourceTree = "<group>"; };
+		FFA1DE100000000000000005 /* UpcomingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpcomingView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -88,6 +94,7 @@
 			isa = PBXGroup;
 			children = (
 				7D4AD9E461EA80D8A4B7D579 /* Models.swift */,
+				FFA1DE100000000000000001 /* MeetingDetectionModels.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -135,6 +142,7 @@
 			children = (
 				4B53D2D8CE73A23CC54E1DE6 /* Home */,
 				CCCC0000000000000000000C /* ActionItems */,
+				FFA1DE100000000000000007 /* Upcoming */,
 				A8B9C0D1E2F3A4B5C6D7E8F9 /* MenuBar */,
 				22C410C77F70FF58529017D5 /* MeetingDetail */,
 				5CBA02661DCD7D32EFD06CB8 /* People */,
@@ -210,6 +218,7 @@
 				DCE9450AD3F25B91E869969B /* BackendProcessManager.swift */,
 				E1D2C3B4A596877869504001 /* CalendarService.swift */,
 				7DBA6CC50E26967DDDAFA002 /* KeychainService.swift */,
+				FFA1DE100000000000000003 /* MeetingDetectorService.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -220,6 +229,14 @@
 				AAAA0000000000000000000A /* ActionItemsView.swift */,
 			);
 			path = ActionItems;
+			sourceTree = "<group>";
+		};
+		FFA1DE100000000000000007 /* Upcoming */ = {
+			isa = PBXGroup;
+			children = (
+				FFA1DE100000000000000005 /* UpcomingView.swift */,
+			);
+			path = Upcoming;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -337,6 +354,9 @@
 				35F9A5DA1202415632618537 /* SettingsView.swift in Sources */,
 				4049BBC2197F916E10B9AE49 /* TranscriptView.swift in Sources */,
 				944619DD990D61F08F346383 /* ViewModels.swift in Sources */,
+				FFA1DE100000000000000002 /* MeetingDetectionModels.swift in Sources */,
+				FFA1DE100000000000000004 /* MeetingDetectorService.swift in Sources */,
+				FFA1DE100000000000000006 /* UpcomingView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
