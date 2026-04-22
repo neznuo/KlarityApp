@@ -19,6 +19,24 @@ final class CalendarService: NSObject, ASWebAuthenticationPresentationContextPro
         Bundle.main.object(forInfoDictionaryKey: "KlarityGoogleClientID") as? String ?? ""
     }
 
+    /// Google requires the reverse client ID as the URL scheme for native app OAuth.
+    /// Format: com.googleusercontent.apps.CLIENT_ID (the ".apps.googleusercontent.com" suffix is removed).
+    private var googleReverseClientID: String {
+        let clientID = googleClientID
+        // e.g. "1072184484443-9fo3ciqd3a7rmrpa9uj0tpa4g3stl1n0.apps.googleusercontent.com"
+        // → "com.googleusercontent.apps.1072184484443-9fo3ciqd3a7rmrpa9uj0tpa4g3stl1n0"
+        let parts = clientID.components(separatedBy: ".")
+        if parts.count >= 4 && clientID.hasSuffix(".apps.googleusercontent.com") {
+            return "com.googleusercontent.apps." + parts.dropLast(3).joined(separator: ".")
+        }
+        // Fallback: reverse the whole thing
+        return clientID.split(separator: ".").reversed().joined(separator: ".")
+    }
+
+    private var googleRedirectURI: String {
+        "\(googleReverseClientID):/oauth2callback"
+    }
+
     private var microsoftClientID: String {
         Bundle.main.object(forInfoDictionaryKey: "KlarityMicrosoftClientID") as? String ?? ""
     }
@@ -57,9 +75,10 @@ final class CalendarService: NSObject, ASWebAuthenticationPresentationContextPro
         let challenge = generateCodeChallenge(from: verifier)
         let authURL = buildAuthURL(provider: provider, challenge: challenge)
 
+        let callbackScheme = provider == .google ? googleReverseClientID : "klarity"
         let callbackURL: URL = try await withCheckedThrowingContinuation { [weak self] cont in
             guard let self else { cont.resume(throwing: CalendarError.deallocated); return }
-            let session = ASWebAuthenticationSession(url: authURL, callbackURLScheme: "klarity") { url, error in
+            let session = ASWebAuthenticationSession(url: authURL, callbackURLScheme: callbackScheme) { url, error in
                 if let error { cont.resume(throwing: error); return }
                 guard let url else { cont.resume(throwing: CalendarError.noCallbackURL); return }
                 cont.resume(returning: url)
@@ -101,6 +120,24 @@ final class CalendarService: NSObject, ASWebAuthenticationPresentationContextPro
             if let providerEvents = try? await fetchEvents(for: provider) {
                 events.append(contentsOf: providerEvents)
             }
+        }
+        return events.sorted { $0.startDate < $1.startDate }
+    }
+
+    /// Throwing variant — surfaces errors when all providers fail. Returns partial results if at least one succeeds.
+    func fetchAllEventsThrowing() async throws -> [CalendarEvent] {
+        var events: [CalendarEvent] = []
+        var lastError: Error?
+        for provider in CalendarSource.allCases where isConnected(provider) {
+            do {
+                let providerEvents = try await fetchEvents(for: provider)
+                events.append(contentsOf: providerEvents)
+            } catch {
+                lastError = error
+            }
+        }
+        if events.isEmpty, let lastError {
+            throw lastError
         }
         return events.sorted { $0.startDate < $1.startDate }
     }
@@ -177,7 +214,7 @@ final class CalendarService: NSObject, ASWebAuthenticationPresentationContextPro
             var components = URLComponents(string: "https://accounts.google.com/o/oauth2/v2/auth")!
             components.queryItems = [
                 URLQueryItem(name: "client_id", value: googleClientID),
-                URLQueryItem(name: "redirect_uri", value: "klarity://oauth/google/callback"),
+                URLQueryItem(name: "redirect_uri", value: googleRedirectURI),
                 URLQueryItem(name: "response_type", value: "code"),
                 URLQueryItem(name: "scope", value: "https://www.googleapis.com/auth/calendar.readonly"),
                 URLQueryItem(name: "code_challenge", value: challenge),
@@ -210,7 +247,7 @@ final class CalendarService: NSObject, ASWebAuthenticationPresentationContextPro
             params = [
                 "code": code,
                 "client_id": googleClientID,
-                "redirect_uri": "klarity://oauth/google/callback",
+                "redirect_uri": googleRedirectURI,
                 "grant_type": "authorization_code",
                 "code_verifier": verifier,
             ]

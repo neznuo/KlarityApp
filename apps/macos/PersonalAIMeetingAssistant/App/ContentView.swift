@@ -94,6 +94,9 @@ struct ContentView: View {
             case .actionItems:
                 ActionItemsView()
                     .navigationTitle("Action Items")
+            case .upcoming:
+                UpcomingView()
+                    .navigationTitle("Upcoming")
             case .settings:
                 SettingsView()
                     .navigationTitle("Settings")

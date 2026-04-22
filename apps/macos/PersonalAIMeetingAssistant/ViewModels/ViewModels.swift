@@ -779,3 +779,86 @@ final class CalendarViewModel: ObservableObject {
         upcomingEvents = await CalendarService.shared.fetchAllEvents()
     }
 }
+
+// MARK: - UpcomingViewModel
+
+@MainActor
+final class UpcomingViewModel: ObservableObject {
+    @Published var upcomingEvents: [CalendarEvent] = []
+    @Published var isLoadingEvents = false
+    @Published var errorMessage: String?
+
+    var hasAnyCalendarConnected: Bool {
+        CalendarService.shared.isConnected(.google) || CalendarService.shared.isConnected(.microsoft)
+    }
+
+    private var refreshTimer: Timer?
+    private var lastFetchTime: Date?
+
+    func loadEvents() async {
+        guard hasAnyCalendarConnected else {
+            upcomingEvents = []
+            return
+        }
+        // Skip refetch if data is fresh (< 5 min old)
+        if let last = lastFetchTime, Date().timeIntervalSince(last) < 300, !upcomingEvents.isEmpty {
+            return
+        }
+        await forceLoadEvents()
+    }
+
+    func forceLoadEvents() async {
+        guard hasAnyCalendarConnected else {
+            upcomingEvents = []
+            return
+        }
+        isLoadingEvents = true
+        defer { isLoadingEvents = false }
+        do {
+            upcomingEvents = try await CalendarService.shared.fetchAllEventsThrowing()
+            lastFetchTime = Date()
+            errorMessage = nil
+        } catch {
+            if upcomingEvents.isEmpty {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func startAutoRefresh() {
+        stopAutoRefresh()
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                await self?.forceLoadEvents()
+            }
+        }
+    }
+
+    func stopAutoRefresh() {
+        refreshTimer?.invalidate()
+        refreshTimer = nil
+    }
+
+    func joinMeeting(url: URL) {
+        NSWorkspace.shared.open(url)
+    }
+
+    func recordOnly(event: CalendarEvent, recordingVM: RecordingViewModel) async {
+        recordingVM.meetingTitle = event.title
+        await recordingVM.startNewMeeting(
+            calendarEventId: event.id,
+            calendarSource: event.calendarSource.rawValue
+        )
+    }
+
+    func joinAndRecord(event: CalendarEvent, recordingVM: RecordingViewModel) async {
+        if let urlStr = event.onlineMeetingUrl, let url = URL(string: urlStr) {
+            NSWorkspace.shared.open(url)
+        }
+        recordingVM.meetingTitle = event.title
+        await recordingVM.startNewMeeting(
+            calendarEventId: event.id,
+            calendarSource: event.calendarSource.rawValue
+        )
+    }
+}
