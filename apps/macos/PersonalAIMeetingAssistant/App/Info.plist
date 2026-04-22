@@ -50,7 +50,7 @@
 			<string>com.googleusercontent.apps</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>com.googleusercontent.apps.1072184484443-ot4bvnhs4dshgvh61v4g87u99mqmk5kn</string>
+				<string>REPLACE_WITH_GOOGLE_CLIENT_ID</string>
 			</array>
 		</dict>
 	</array>
