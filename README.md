@@ -1,218 +1,262 @@
-# KlarityApp — Personal AI Meeting Assistant
+<p align="center">
+  <img src="KlarityAppLogo.png" alt="Klarity" width="120">
+</p>
 
-A **local-first macOS desktop application** that records meetings, transcribes them after the meeting ends, identifies speakers, and generates structured meeting notes — all without a meeting bot.
+<h1 align="center">Klarity</h1>
+
+<p align="center">
+  <strong>Personal AI Meeting Assistant for macOS</strong><br>
+  Record meetings locally, transcribe them, identify speakers, and generate structured notes — no meeting bot required.
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/platform-macOS%2014%2B-blue" alt="macOS 14+">
+  <img src="https://img.shields.io/badge/Swift-5-orange" alt="Swift 5">
+  <img src="https://img.shields.io/badge/Python-3.11+-blue" alt="Python 3.11+">
+</p>
 
 ---
 
 ## Architecture
 
 ```
-SwiftUI macOS App  →  Local FastAPI Backend  →  ElevenLabs / Resemblyzer / Ollama / OpenAI
+SwiftUI macOS App  →  Local FastAPI Backend  →  ElevenLabs / Resemblyzer / LLM
 ```
 
-| Layer     | Technology                         |
-|-----------|-------------------------------------|
-| Frontend  | Swift + SwiftUI (macOS)             |
-| Backend   | Python 3.11 + FastAPI + Uvicorn     |
-| Database  | SQLite via SQLAlchemy               |
-| Audio capture | AVFoundation: SCStream (system audio) + AVCaptureSession (mic) |
-| Audio mixing  | AVMutableComposition + AVAssetExportSession (post-recording mix to .m4a) |
-| Audio preprocessing | FFmpeg (16kHz mono normalization) |
-| STT       | ElevenLabs Scribe                   |
-| Embeddings| Resemblyzer                         |
-| LLM       | OpenAI / Anthropic / Gemini / Ollama|
-| Calendar  | Google Calendar API v3 + Microsoft Graph (PKCE OAuth, Swift-only) |
+| Layer            | Technology                                                    |
+|------------------|---------------------------------------------------------------|
+| Frontend         | Swift + SwiftUI (macOS 14+)                                  |
+| Backend          | Python 3.11+ FastAPI + Uvicorn                               |
+| Database         | SQLite via SQLAlchemy                                         |
+| System audio     | Core Audio Process Tap (`CATapDescription`, macOS 14.2+)      |
+| Microphone       | AVAudioEngine inputNode tap                                   |
+| Audio mixing     | Streaming float32 average of two temp WAVs → `audio.wav`     |
+| Audio preproc    | FFmpeg (16kHz mono normalization)                             |
+| Transcription    | ElevenLabs Scribe (speaker diarization)                       |
+| Speaker ID       | Resemblyzer d-vectors + cosine similarity                     |
+| LLM              | OpenAI / Anthropic / Gemini / Ollama                          |
+| Calendar         | Google Calendar API v3 + Microsoft Graph (PKCE OAuth)        |
+
+All data stays on-device unless cloud APIs are explicitly configured.
 
 ---
 
-## Repository Structure
+## Getting Started
+
+### Prerequisites
+
+- macOS 14+ (Sonoma or later)
+- Xcode 15+
+- Homebrew
+- Python 3.11+
+
+### 1. Clone
+
+```bash
+git clone https://github.com/neznuo/KlarityApp.git
+cd KlarityApp
+```
+
+### 2. Install system dependency
+
+```bash
+brew install ffmpeg
+```
+
+### 3. Set up the Python backend
+
+```bash
+cd backend
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+```
+
+Edit `backend/.env` and add your API keys:
+
+| Key                    | Required | Purpose                        |
+|------------------------|----------|--------------------------------|
+| `ELEVENLABS_API_KEY`   | Yes      | Transcription + speaker diarization |
+| `OPENAI_API_KEY`       | No       | LLM summarization              |
+| `ANTHROPIC_API_KEY`    | No       | LLM summarization              |
+| `GEMINI_API_KEY`       | No       | LLM summarization              |
+| `OLLAMA_ENDPOINT`      | No       | Local LLM (e.g. `http://localhost:11434`) |
+
+At minimum, set `ELEVENLABS_API_KEY` and one LLM provider. If using Ollama, set `DEFAULT_LLM_PROVIDER=ollama` and `DEFAULT_LLM_MODEL=llama3`.
+
+### 4. Set up OAuth client IDs (for Calendar Sync)
+
+Calendar Sync lets upcoming meetings appear as one-tap auto-fill pills when you start a recording. It's optional — the app works without it.
+
+```bash
+cd apps/macos
+cp Secrets.xcconfig.example Secrets.xcconfig
+```
+
+Edit `apps/macos/Secrets.xcconfig` and replace the placeholder values:
+
+```
+GOOGLE_CLIENT_ID = your-client-id.apps.googleusercontent.com
+GOOGLE_REVERSE_CLIENT_ID = com.googleusercontent.apps.your-client-id-prefix
+MICROSOFT_CLIENT_ID = your-azure-app-client-id
+```
+
+**Where to get these:**
+
+<details>
+<summary>Google Calendar</summary>
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/) → APIs & Services → Credentials
+2. Create an **OAuth 2.0 Client ID**, application type **iOS**
+3. Set the redirect URI: `klarity://oauth/google/callback`
+4. Enable the **Google Calendar API** for the project
+5. The client ID goes in `GOOGLE_CLIENT_ID`
+6. The reverse client ID is `com.googleusercontent.apps.` + everything before `.apps.googleusercontent.com`
+
+</details>
+
+<details>
+<summary>Microsoft Outlook</summary>
+
+1. Go to [Azure Portal](https://portal.azure.com/) → App registrations → New registration
+2. Add redirect URI (platform: **Mobile and desktop applications**): `klarity://oauth/microsoft/callback`
+3. Under API permissions, add `Calendars.Read` and `offline_access`
+
+</details>
+
+`Secrets.xcconfig` is gitignored — it will never be committed.
+
+### 5. Configure Xcode build phase (one-time)
+
+The Python backend gets bundled into the `.app` automatically via a build script. Set it up once:
+
+1. Open `apps/macos/KlarityApp.xcodeproj` in Xcode
+2. Select the **KlarityApp** target → **Build Phases** → **+** → **New Run Script Phase**
+3. Paste the script path:
+   ```
+   "${SRCROOT}/scripts/bundle_backend.sh"
+   ```
+4. Uncheck **"Based on dependency analysis"**
+5. Drag the phase to run **after Compile Sources** but **before Copy Bundle Resources**
+
+Every subsequent build will automatically bundle the backend + venv into the app.
+
+### 6. Build & Run
+
+**Option A: Xcode**
+
+Open the project and press `⌘R`.
+
+**Option B: Command line**
+
+```bash
+./scripts/build.sh
+```
+
+On success, the build script prints the path to the `.app` bundle. Run it:
+
+```bash
+open /tmp/KlarityApp-build/Build/Products/Debug/KlarityApp.app
+```
+
+The app launches the embedded Python backend automatically (~2s warmup) and shuts it down cleanly on quit.
+
+---
+
+## Project Structure
 
 ```
 KlarityApp/
-├── docs/                           # PRD, architecture, build plan
-├── storage/                        # Local data root (gitignored content)
-├── apps/
-│   └── macos/
-│       └── PersonalAIMeetingAssistant/
-│           ├── App/                # Entry point, ContentView, termination handler
-│           ├── Models/             # Swift data models
-│           ├── Services/           # APIClient, AudioRecorder, KeychainService,
-│           │                       # BackendProcessManager, CalendarService
-│           ├── ViewModels/         # Observable ViewModels
-│           └── Features/
-│               ├── Home/           # Meeting list + search
-│               ├── Recording/      # Recording sheet
-│               ├── MeetingDetail/  # Tabbed detail page + audio player
-│               ├── Transcript/     # Transcript view + AudioPlayerView
-│               ├── People/         # Known people library
-│               └── Settings/       # Provider & storage configuration
+├── apps/macos/
+│   ├── KlarityApp.xcodeproj/       # Xcode project
+│   ├── project.yml                 # XcodeGen source of truth
+│   ├── Shared.xcconfig             # Build config (committed, placeholder values)
+│   ├── Secrets.xcconfig            # OAuth client IDs (gitignored)
+│   ├── Secrets.xcconfig.example    # Template for Secrets.xcconfig
+│   └── PersonalAIMeetingAssistant/
+│       ├── App/                    # Entry point, AppState, ContentView
+│       ├── Models/                 # Swift data models
+│       ├── ViewModels/             # Observable ViewModels
+│       ├── Services/               # APIClient, AudioRecorder, KeychainService,
+│       │                           # BackendProcessManager, CalendarService
+│       └── Features/
+│           ├── Home/               # Meeting list + search
+│           ├── Recording/          # Recording sheet
+│           ├── MeetingDetail/      # Tabbed detail view + audio player
+│           ├── Transcript/         # Transcript viewer
+│           ├── People/             # Known people library
+│           ├── Onboarding/         # First-run setup wizard
+│           ├── ActionItems/        # Action items list
+│           └── Settings/           # API keys, permissions, storage
 ├── scripts/
+│   ├── build.sh                    # Debug build wrapper
 │   └── bundle_backend.sh           # Xcode build phase: copies venv into .app
 └── backend/
     ├── app/
     │   ├── api/                    # FastAPI routers
-    │   ├── core/                   # config.py
-    │   ├── db/                     # database.py, schema.sql
-    │   ├── models/                 # SQLAlchemy ORM models
-    │   ├── schemas/                # Pydantic schemas
+    │   ├── core/                   # config.py (Pydantic Settings)
+    │   ├── db/                     # SQLAlchemy setup + init
+    │   ├── models/                 # ORM models
+    │   ├── schemas/                # Pydantic request/response schemas
     │   ├── services/
     │   │   ├── audio/              # FFmpeg preprocessor
-    │   │   ├── transcription/      # ElevenLabs provider + base
+    │   │   ├── transcription/      # ElevenLabs provider
     │   │   ├── embeddings/         # Resemblyzer speaker embeddings
-    │   │   ├── summarization/      # OpenAI / Ollama / Anthropic providers
+    │   │   ├── summarization/      # OpenAI / Anthropic / Gemini / Ollama
     │   │   └── storage/            # File layout helpers
     │   ├── workers/                # Processing pipeline orchestration
-    │   └── prompts/                # summary_prompt.txt
+    │   └── prompts/                # LLM system prompts
     ├── tests/
     ├── requirements.txt
-    ├── pyproject.toml
+    ├── pyproject.toml               # Ruff + pytest config
     └── .env.example
 ```
 
-For contributor expectations and workflow details, see [AGENTS.md](AGENTS.md).
+---
+
+## How It Works
+
+1. **Record** — Click "New Recording". System audio and microphone are captured on separate paths into temp WAV files
+2. **Mix** — On stop, both sources are averaged sample-by-sample into a single `audio.wav`
+3. **Transcribe** — ElevenLabs Scribe returns timestamped segments with speaker IDs
+4. **Identify** — Resemblyzer computes voice embeddings and matches against known people
+5. **Summarize** — Click "Generate Summary" to produce structured notes and action items via your chosen LLM
+
+Meeting processing is fully asynchronous — you can start a new recording immediately after stopping one.
 
 ---
 
-## Quick Start
+## Configuration Reference
 
-The backend runs **inside the `.app` bundle** — you do not start it separately. Just build and run in Xcode.
+### Environment Variables (`backend/.env`)
 
-### 1. One-time setup (before first build)
+| Key                         | Default                   | Description                          |
+|-----------------------------|---------------------------|--------------------------------------|
+| `BASE_STORAGE_DIR`          | `~/Documents/AI-Meetings` | Local data root                      |
+| `ELEVENLABS_API_KEY`        | —                         | Required for transcription           |
+| `DEFAULT_TRANSCRIPTION_PROVIDER` | `elevenlabs`         | Transcription provider               |
+| `OPENAI_API_KEY`            | —                         | OpenAI LLM                           |
+| `ANTHROPIC_API_KEY`         | —                         | Anthropic LLM                        |
+| `GEMINI_API_KEY`            | —                         | Google Gemini LLM                    |
+| `OLLAMA_ENDPOINT`           | —                         | Local Ollama endpoint                |
+| `DEFAULT_LLM_PROVIDER`     | `ollama`                  | Default LLM provider                 |
+| `DEFAULT_LLM_MODEL`         | `llama3`                  | Default LLM model                    |
+| `SPEAKER_SUGGEST_THRESHOLD` | `0.75`                    | Cosine similarity to suggest a match |
+| `SPEAKER_AUTO_ASSIGN_THRESHOLD` | `0.90`               | Cosine similarity to auto-assign     |
+| `SPEAKER_DUPLICATE_THRESHOLD` | `0.82`                  | Duplicate speaker detection          |
+| `BACKEND_PORT`              | `8765`                    | Backend server port                  |
+| `LOG_LEVEL`                 | `INFO`                    | Logging verbosity                    |
 
-```bash
-# Install FFmpeg (required for audio preprocessing)
-brew install ffmpeg
+### Speaker Recognition Thresholds
 
-# Create the Python virtualenv and install all dependencies
-cd backend
-python3 -m venv venv
-pip install -r requirements.txt
+Adjustable in Settings:
 
-# Copy and configure environment variables
-cp .env.example .env
-# Edit .env — add your ElevenLabs and LLM API keys
-```
-
-### 2. Xcode build phase setup (one-time)
-
-1. Target → **Build Phases** → **+** → **New Run Script Phase**
-2. Paste the script path:
-   ```
-   "${SRCROOT}/../../../scripts/bundle_backend.sh"
-   ```
-   *(adjust depth to match your Xcode project location relative to the repo root)*
-3. Uncheck **"Based on dependency analysis"** so it always runs
-4. Move the phase to run **after Compile Sources**
-
-Every subsequent `⌘R` or Archive will automatically copy `backend/app/` + `backend/venv/` into `.app/Contents/Resources/backend/`.
-
-### 3. Run
-
-Press `⌘R` in Xcode. The app launches, starts the embedded Python backend automatically (~2 second warmup), and shuts it down cleanly when you quit.
-
-Backend API docs (during development): http://127.0.0.1:8765/docs
-
----
-
-## Bundled Backend
-
-The Python FastAPI backend is embedded inside the `.app` bundle and managed entirely by the Swift app:
-
-```
-KlarityApp.app/
-└── Contents/
-    ├── MacOS/KlarityApp          ← Swift binary
-    └── Resources/
-        └── backend/
-            ├── app/              ← FastAPI source code
-            └── venv/             ← Python virtualenv with all dependencies
-```
-
-| Component | Role |
-|-----------|------|
-| `BackendProcessManager.swift` | Finds the bundled venv, spawns `uvicorn`, terminates on quit |
-| `AppTerminationHandler.swift` | Hooks `NSApplication.willTerminateNotification` for clean shutdown |
-| `scripts/bundle_backend.sh` | Xcode build phase script — rsyncs backend into the bundle |
-
-Users see a single `.app`. There is no separate server to start.
-
----
-
-## Key Workflows
-
-| Step | Actor | Description |
-|------|-------|-------------|
-| 1    | User  | Click **New Recording** — upcoming calendar events appear as one-tap pills to auto-fill the title |
-| 2    | App   | Create meeting record (with optional `calendar_event_id`/`calendar_source`), start capture: SCStream (system audio) + AVCaptureSession (mic) |
-| 3    | User  | Stop recording when meeting ends |
-| 4    | App   | Mix system + mic temp files into final `audio.m4a` via AVMutableComposition export |
-| 5    | Backend | Preprocess audio → Transcribe (ElevenLabs) → Embed speakers |
-| 6    | User  | Review transcript, fix/assign speaker identities |
-| 7    | User  | Click **Generate Summary & Tasks** when ready |
-| 8    | Backend | Call selected LLM → save summary.md + tasks.json |
-
----
-
-## Configuration
-
-### Calendar Sync (optional)
-
-Connects Google Calendar and/or Outlook so upcoming meetings appear as auto-fill pills in the New Recording sheet. All OAuth tokens are stored locally in the macOS Keychain — nothing is sent to the backend except a connected/disconnected boolean flag.
-
-#### 1. Register OAuth apps
-
-**Google Calendar**
-1. Go to [Google Cloud Console](https://console.cloud.google.com/) → APIs & Services → Credentials
-2. Create an **OAuth 2.0 Client ID**, application type **iOS** (works for macOS PKCE flows)
-3. Set the redirect URI to: `klarity://oauth/google/callback`
-4. Enable the **Google Calendar API** for the project
-
-**Microsoft Outlook**
-1. Go to [Azure Portal](https://portal.azure.com/) → App registrations → New registration
-2. Add a redirect URI (platform: **Mobile and desktop applications**): `klarity://oauth/microsoft/callback`
-3. Under API permissions, add `Calendars.Read` and `offline_access` (Microsoft Graph)
-
-#### 2. Add client IDs to the app
-
-Open `apps/macos/PersonalAIMeetingAssistant/App/Info.plist` and replace the placeholder values:
-
-```xml
-<key>KlarityGoogleClientID</key>
-<string>YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com</string>
-<key>KlarityMicrosoftClientID</key>
-<string>YOUR_AZURE_APPLICATION_CLIENT_ID</string>
-```
-
-#### 3. Connect in-app
-
-Open **Settings → Calendar Sync** and click **Connect** next to each provider. A browser window will open for OAuth authorization. Once approved, upcoming meetings (next 24 hours) appear as pills when you start a new recording.
-
----
-
-### Transcription
-- Primary: **ElevenLabs Scribe** (`ELEVENLABS_API_KEY`)
-
-### LLM Providers
-| Provider   | Key / Endpoint         |
-|------------|------------------------|
-| Ollama     | `OLLAMA_ENDPOINT`      |
-| OpenAI     | `OPENAI_API_KEY`       |
-| Anthropic  | `ANTHROPIC_API_KEY`    |
-| Gemini     | `GEMINI_API_KEY`       |
-
-### Storage
-Default storage: `~/Documents/AI-Meetings`
-
----
-
-## Speaker Recognition
-
-- Embeddings via **Resemblyzer** (d-vectors)
-- Cosine similarity matching against known people library
-- Thresholds configurable in Settings:
-  - Suggest match: `0.75`
-  - Auto-assign: `0.90`
-  - Duplicate detection: `0.82`
+| Threshold | Default | Behavior                              |
+|-----------|---------|---------------------------------------|
+| Suggest   | 0.75    | Show as a suggested match             |
+| Auto-assign | 0.90  | Assign without prompting              |
+| Duplicate | 0.82    | Detect same speaker across clusters   |
 
 ---
 
@@ -220,19 +264,44 @@ Default storage: `~/Documents/AI-Meetings`
 
 ```bash
 cd backend
+source venv/bin/activate
 pytest tests/ -v
+```
+
+Lint:
+
+```bash
+cd backend
+ruff check app/
 ```
 
 ---
 
-## Important Design Constraints
+## Design Constraints
 
 - **No meeting bots** — records local audio only
-- **No live transcription** in V1 — post-meeting processing only
-- **Summary generation is always manual** — user clicks the button
-- **All data stays local** unless cloud API is explicitly configured
-- API keys and OAuth tokens for all providers stored in **macOS Keychain** (Swift) and env variables (backend)
-- **Calendar OAuth is handled entirely in Swift** — backend only stores `calendar_event_id` and `calendar_source` string fields on the Meeting record
+- **No live transcription** — post-meeting processing only
+- **Summary generation is manual** — user clicks the button
+- **All data stays local** unless cloud APIs are explicitly configured
+- API keys and OAuth tokens stored in **macOS Keychain** (Swift) and `.env` (backend)
+- Calendar OAuth is handled entirely in Swift — the backend only stores calendar event IDs
 
-## Build App Locally
-./scripts/build.sh 2>&1 | tail -30
+---
+
+## Data Storage
+
+```
+~/Documents/AI-Meetings/
+├── meetings/{meeting_id}/
+│   ├── audio.wav              # Mixed recording (16kHz mono int16)
+│   ├── normalized.wav         # FFmpeg-normalized output
+│   ├── transcript.raw.json    # Raw ElevenLabs response
+│   ├── transcript.json        # Structured speaker segments
+│   ├── summary.json           # LLM structured output
+│   ├── summary.md             # Human-readable summary
+│   └── tasks.json             # Extracted action items
+├── voices/{person_id}.npy     # Resemblyzer voice embeddings
+└── logs/
+    ├── app.db                  # SQLite database
+    └── backend.log             # Backend process log
+```
