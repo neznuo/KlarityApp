@@ -59,6 +59,7 @@ struct KlarityApp: App {
 // MARK: - App State
 
 /// Global application state — holds backend reachability and process handle.
+@MainActor
 final class AppState: ObservableObject {
     /// Shared reference so BackendProcessManager can call back into it.
     static weak var shared: AppState?
@@ -81,6 +82,8 @@ final class AppState: ObservableObject {
 
     /// Set to true by the menu bar "New Recording" button to trigger the sheet in ContentView.
     @Published var triggerNewRecording: Bool = false
+
+    let meetingDetector = MeetingDetectorService()
 
     private let backend = BackendProcessManager.shared
 

@@ -16,11 +16,14 @@ final class MenuBarManager: ObservableObject {
     private var reminderPopover: NSPopover?
     private var notificationTask: Task<Void, Never>?
     private weak var recordingVM: RecordingViewModel?
+    private weak var appState: AppState?
+    private var meetingDetectionTask: Task<Void, Never>?
 
     // MARK: Lifecycle
 
     /// Call once after appState and recordingVM are ready (from ContentView.task).
     func setup(appState: AppState, recordingVM: RecordingViewModel) {
+        self.appState = appState
         self.recordingVM = recordingVM
         let shouldShow = UserDefaults.standard.object(forKey: "klarityShowMenuBar") == nil
             ? true
@@ -40,6 +43,13 @@ final class MenuBarManager: ObservableObject {
                     let mins = notification.userInfo?["minutes"] as? Int ?? 30
                     await self?.showReminder(minutes: mins)
                 }
+            }
+        }
+        // Listen for meeting detection
+        meetingDetectionTask = Task { [weak self] in
+            for await _ in NotificationCenter.default.notifications(named: NSNotification.Name("KlarityMeetingDetected")) {
+                guard let meeting = self?.appState?.meetingDetector.detectedMeeting else { return }
+                self?.showMeetingNotification(meeting)
             }
         }
     }
@@ -76,6 +86,7 @@ final class MenuBarManager: ObservableObject {
         popover = nil
         reminderPopover = nil
         notificationTask?.cancel()
+        meetingDetectionTask?.cancel()
     }
 
     func openMainWindow() {
@@ -115,6 +126,74 @@ final class MenuBarManager: ObservableObject {
         item.button?.image = img
     }
     
+    private func showMeetingNotification(_ meeting: DetectedMeeting) {
+        if popover?.isShown == true { return }
+        guard let button = statusItem?.button else { return }
+
+        if reminderPopover == nil {
+            let pop = NSPopover()
+            pop.behavior = .transient
+            self.reminderPopover = pop
+        }
+
+        let sourceIcon: String
+        switch meeting.source {
+        case .calendar: sourceIcon = "calendar"
+        case .audioDevice: sourceIcon = "speaker.wave.2.fill"
+        case .windowTitle: sourceIcon = "app.badge"
+        }
+
+        let sourceLabel = meeting.source == .calendar ? "Meeting Starting" : "Meeting Detected"
+
+        let root = VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: sourceIcon)
+                    .foregroundStyle(AppTheme.Colors.brandPrimary)
+                    .font(.system(size: 14))
+                Text("\(sourceLabel) — \(meeting.appName)")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color(NSColor.labelColor))
+            }
+            Text(meeting.meetingTitle)
+                .font(.system(size: 12))
+                .foregroundStyle(Color(NSColor.secondaryLabelColor))
+                .lineLimit(2)
+
+            HStack(spacing: 12) {
+                Button {
+                    self.reminderPopover?.performClose(nil)
+                    self.appState?.meetingDetector.clearDetection()
+                    self.openMainWindow()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                        self.appState?.triggerNewRecording = true
+                    }
+                } label: {
+                    Text("Start Recording")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(AppTheme.Colors.brandPrimary)
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    self.reminderPopover?.performClose(nil)
+                    self.appState?.meetingDetector.clearDetection()
+                } label: {
+                    Text("Dismiss")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Color.blue)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.top, 4)
+        }
+        .padding(14)
+        .frame(width: 240)
+
+        reminderPopover?.contentViewController = NSHostingController(rootView: root)
+        reminderPopover?.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        NSSound(named: "Glass")?.play()
+    }
+
     private func showReminder(minutes: Int) {
         // If the main menu is already open, do not disrupt it
         if popover?.isShown == true { return }
