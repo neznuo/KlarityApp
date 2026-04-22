@@ -24,6 +24,9 @@ targets:
       - path: PersonalAIMeetingAssistant
         excludes:
           - "**/*.md"
+    configFiles:
+      Debug: Debug.xcconfig
+      Release: Release.xcconfig
     info:
       path: PersonalAIMeetingAssistant/App/Info.plist
       properties:
@@ -32,10 +35,20 @@ targets:
         CFBundleShortVersionString: "1.0"
         CFBundleVersion: "1"
         NSMicrophoneUsageDescription: "KlarityApp records meeting audio from your microphone."
+        NSAudioCaptureUsageDescription: "KlarityApp captures system audio to record meeting participants."
         NSScreenCaptureUsageDescription: "KlarityApp needs Screen Recording permission to capture system audio (Zoom, Meets, etc). No video frames are ever recorded."
         NSPrincipalClass: NSApplication
         NSHighResolutionCapable: true
         LSMinimumSystemVersion: "14.0"
+        CFBundleURLTypes:
+          - CFBundleURLName: com.klarity.oauth
+            CFBundleURLSchemes:
+              - klarity
+          - CFBundleURLName: com.googleusercontent.apps
+            CFBundleURLSchemes:
+              - $(GOOGLE_REVERSE_CLIENT_ID)
+        KlarityGoogleClientID: $(GOOGLE_CLIENT_ID)
+        KlarityMicrosoftClientID: $(MICROSOFT_CLIENT_ID)
     entitlements:
       path: PersonalAIMeetingAssistant/App/KlarityApp.entitlements
       properties:

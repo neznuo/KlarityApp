@@ -1,6 +1,6 @@
 // Shared build settings for all configurations.
 // OAuth client IDs are overridden by Secrets.xcconfig (gitignored).
 
-GOOGLE_CLIENT_ID = YOUR_GOOGLE_CLIENT_ID_HERE
-GOOGLE_REVERSE_CLIENT_ID = YOUR_GOOGLE_REVERSE_CLIENT_ID_HERE
+GOOGLE_CLIENT_ID = 1072184484443-82lhf4egmuc2rs7p45gc45cgje92q6us.apps.googleusercontent.com
+GOOGLE_REVERSE_CLIENT_ID = com.googleusercontent.apps.1072184484443-82lhf4egmuc2rs7p45gc45cgje92q6us
 MICROSOFT_CLIENT_ID = YOUR_MICROSOFT_CLIENT_ID_HERE

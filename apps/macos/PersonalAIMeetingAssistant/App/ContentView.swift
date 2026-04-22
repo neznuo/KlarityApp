@@ -74,6 +74,7 @@ struct ContentView: View {
     @State private var selection: AppNavigationItem? = .meetings
     @State private var showingRecording = false
     @AppStorage("klarityShowMenuBar") private var showMenuBarItem: Bool = true
+    @AppStorage("klarityHasCompletedOnboarding") private var onboardingCompleted: Bool = true
 
     private var isActivelyRecording: Bool {
         recordingVM.isRecording || recordingVM.isPaused ||
@@ -81,6 +82,16 @@ struct ContentView: View {
     }
 
     var body: some View {
+        if onboardingCompleted {
+            mainAppView
+        } else {
+            OnboardingView()
+                .environmentObject(appState)
+                .environmentObject(recordingVM)
+        }
+    }
+
+    private var mainAppView: some View {
         NavigationSplitView {
             AppSidebar(selection: $selection)
         } detail: {
@@ -100,16 +111,6 @@ struct ContentView: View {
             case .settings:
                 SettingsView()
                     .navigationTitle("Settings")
-            default:
-                VStack(spacing: AppTheme.Metrics.paddingStandard) {
-                    Image(systemName: "hammer.fill")
-                        .font(.largeTitle)
-                        .foregroundColor(AppTheme.Colors.secondaryText)
-                    Text("\(selection?.rawValue ?? "") is under construction.")
-                        .font(AppTheme.Fonts.listTitle)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(AppTheme.Colors.background)
             }
         }
         // Register this window with WindowManager (installs hide-on-close delegate)
@@ -367,8 +368,6 @@ enum AppNavigationItem: String, CaseIterable, Identifiable {
     case meetings    = "Meetings"
     case upcoming    = "Upcoming"
     case actionItems = "Action Items"
-    case later       = "Later"
-    case activity    = "Activity"
     case contacts    = "Contacts"
     case settings    = "Settings"
 
@@ -379,8 +378,6 @@ enum AppNavigationItem: String, CaseIterable, Identifiable {
         case .meetings:    return "video"
         case .upcoming:    return "clock"
         case .actionItems: return "list.bullet.clipboard"
-        case .later:       return "clock.arrow.circlepath"
-        case .activity:    return "bell"
         case .contacts:    return "person.2"
         case .settings:    return "gear"
         }
