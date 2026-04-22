@@ -160,10 +160,34 @@ private struct SpeakerStrip: View {
 
     @State private var hoveredClusterId: String?
 
+    /// Deduplicated speakers: merges multiple clusters assigned to the same person
+    /// into a single chip. Unmatched and suggested clusters remain separate.
+    private var deduplicatedSpeakers: [SpeakerCluster] {
+        var seen = Set<String>()  // person IDs we've already emitted a chip for
+        var result: [SpeakerCluster] = []
+
+        // First pass: assigned clusters (deduplicate by person)
+        for cluster in speakers {
+            if let personId = cluster.assignedPersonId {
+                guard !seen.contains(personId) else { continue }
+                seen.insert(personId)
+                result.append(cluster)
+            }
+        }
+
+        // Second pass: suggested and unmatched clusters (keep separate)
+        for cluster in speakers {
+            if cluster.assignedPersonId != nil { continue } // already handled
+            result.append(cluster)
+        }
+
+        return result
+    }
+
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                ForEach(speakers) { cluster in
+                ForEach(deduplicatedSpeakers) { cluster in
                     speakerChip(for: cluster)
                 }
             }

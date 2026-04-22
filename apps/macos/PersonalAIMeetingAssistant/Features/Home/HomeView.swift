@@ -57,6 +57,14 @@ struct HomeView: View {
                 recordingVM.completedMeeting = nil
                 Task { await vm.load() }
             }
+            // Clear selection when a meeting is deleted
+            .onChange(of: vm.deletedMeetingId) { _, deletedId in
+                guard let deletedId else { return }
+                if selectedMeetingId == deletedId {
+                    selectedMeetingId = nil
+                }
+                vm.deletedMeetingId = nil
+            }
             .confirmationDialog(
                 "Delete \(selectedIds.count) meeting\(selectedIds.count == 1 ? "" : "s")?",
                 isPresented: $showDeleteConfirm,

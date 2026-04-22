@@ -1,42 +1,45 @@
 import SwiftUI
 import AppKit
 
+class AutoSizingTextView: NSTextView {
+    override var intrinsicContentSize: NSSize {
+        guard let manager = layoutManager, let container = textContainer else {
+            return super.intrinsicContentSize
+        }
+        manager.ensureLayout(for: container)
+        let rect = manager.usedRect(for: container)
+        return NSSize(width: NSView.noIntrinsicMetric, height: rect.height + textContainerInset.height * 2)
+    }
+    
+    override func layout() {
+        super.layout()
+        invalidateIntrinsicContentSize()
+    }
+}
+
 /// Renders meeting summary markdown in a native NSTextView.
-/// Unlike SwiftUI Text, NSTextView allows free-form selection across the entire document —
-/// the user can drag-select multiple paragraphs and copy with ⌘C.
 struct SelectableMeetingNotesView: NSViewRepresentable {
     let markdown: String
 
-    func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSScrollView()
-        scrollView.hasVerticalScroller = false
-        scrollView.hasHorizontalScroller = false
-        scrollView.autohidesScrollers = true
-        scrollView.drawsBackground = false
-
-        let textView = NSTextView()
+    func makeNSView(context: Context) -> AutoSizingTextView {
+        let textView = AutoSizingTextView()
         textView.isEditable = false
         textView.isSelectable = true
         textView.isRichText = false
         textView.drawsBackground = false
         textView.textContainerInset = NSSize(width: 0, height: 4)
-        textView.autoresizingMask = [.width]
-        textView.translatesAutoresizingMaskIntoConstraints = false
+        textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        textView.setContentCompressionResistancePriority(.defaultHigh, for: .vertical)
+        
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.textContainer?.widthTracksTextView = true
-        textView.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
-                                                       height: CGFloat.greatestFiniteMagnitude)
-
-        scrollView.documentView = textView
-        return scrollView
+        return textView
     }
 
-    func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        guard let textView = scrollView.documentView as? NSTextView else { return }
+    func updateNSView(_ textView: AutoSizingTextView, context: Context) {
         textView.textStorage?.setAttributedString(buildAttributedString(markdown))
-        // Resize to fit content
-        textView.sizeToFit()
+        textView.invalidateIntrinsicContentSize()
     }
 
     // MARK: - Attributed string builder

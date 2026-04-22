@@ -72,9 +72,82 @@ def assign_speaker(
         person = db.get(Person, body.person_id)
         if not person:
             raise HTTPException(status_code=404, detail="Person not found")
+
+        # ── Auto-merge: if another cluster in this meeting is already assigned
+        # to the same person, merge this cluster into that existing one ────────
+        existing = (
+            db.query(SpeakerCluster)
+            .filter(
+                SpeakerCluster.meeting_id == meeting_id,
+                SpeakerCluster.assigned_person_id == person.id,
+                SpeakerCluster.id != cluster.id,
+            )
+            .first()
+        )
+        if existing:
+            # Move all transcript segments from this cluster to the existing one
+            db.query(TranscriptSegment).filter(
+                TranscriptSegment.cluster_id == cluster.id
+            ).update({"cluster_id": existing.id}, synchronize_session="fetch")
+            existing.segment_count = (
+                existing.segment_count or 0
+            ) + (cluster.segment_count or 0)
+            if cluster.duration_seconds:
+                existing.duration_seconds = (
+                    existing.duration_seconds or 0.0
+                ) + cluster.duration_seconds
+            db.delete(cluster)
+            db.flush()
+            # Return the merged cluster's ID so the frontend can refresh
+            db.commit()
+            return {
+                "message": "Speaker assigned and merged with existing cluster",
+                "cluster_id": existing.id,
+                "merged": True,
+            }
+
         cluster.assigned_person_id = person.id
     elif body.new_person_name:
-        person = Person(display_name=body.new_person_name)
+        # Check if a person with this exact name already exists
+        existing_person = (
+            db.query(Person)
+            .filter(Person.display_name == body.new_person_name)
+            .first()
+        )
+        if existing_person:
+            # Reuse the existing person instead of creating a duplicate
+            person = existing_person
+            cluster.assigned_person_id = person.id
+            # Auto-merge: if another cluster in this meeting is already assigned
+            # to this person, merge this cluster into the existing one
+            other = (
+                db.query(SpeakerCluster)
+                .filter(
+                    SpeakerCluster.meeting_id == meeting_id,
+                    SpeakerCluster.assigned_person_id == person.id,
+                    SpeakerCluster.id != cluster.id,
+                )
+                .first()
+            )
+            if other:
+                db.query(TranscriptSegment).filter(
+                    TranscriptSegment.cluster_id == cluster.id
+                ).update({"cluster_id": other.id}, synchronize_session="fetch")
+                other.segment_count = (other.segment_count or 0) + (
+                    cluster.segment_count or 0
+                )
+                if cluster.duration_seconds:
+                    other.duration_seconds = (other.duration_seconds or 0.0) + cluster.duration_seconds
+                db.delete(cluster)
+                db.flush()
+                db.commit()
+                return {
+                    "message": "Speaker assigned and merged with existing cluster",
+                    "cluster_id": other.id,
+                    "merged": True,
+                }
+        else:
+            person = Person(display_name=body.new_person_name)
         db.add(person)
         db.flush()
         cluster.assigned_person_id = person.id

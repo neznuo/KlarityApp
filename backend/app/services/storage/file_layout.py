@@ -1,6 +1,7 @@
 """Local filesystem storage layout helpers."""
 
 from __future__ import annotations
+from typing import Optional
 
 import re
 from pathlib import Path
@@ -15,7 +16,7 @@ def slugify(text: str) -> str:
     return re.sub(r"[\s_-]+", "-", text)
 
 
-def get_meeting_dir(meeting_id: str, title: str | None = None) -> Path:
+def get_meeting_dir(meeting_id: str, title: Optional[str] = None) -> Path:
     """
     Return (and create) the directory for a specific meeting.
     Uses meeting_id as the folder name — clean and collision-free.

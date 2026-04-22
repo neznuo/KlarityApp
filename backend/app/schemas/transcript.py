@@ -1,6 +1,7 @@
 """TranscriptSegment Pydantic schema."""
 
 from __future__ import annotations
+from typing import Optional
 
 from pydantic import BaseModel
 
@@ -10,10 +11,10 @@ class TranscriptSegmentOut(BaseModel):
 
     id: str
     meeting_id: str
-    cluster_id: str | None
+    cluster_id: Optional[str]
     # Resolved display name from the cluster → person assignment, if available
-    speaker_label: str | None = None
+    speaker_label: Optional[str] = None
     start_ms: int
     end_ms: int
     text: str
-    confidence: float | None
+    confidence: Optional[float]

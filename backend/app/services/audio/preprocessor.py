@@ -1,6 +1,7 @@
 """Audio preprocessing service using FFmpeg."""
 
 from __future__ import annotations
+from typing import Optional
 
 import json
 import shutil
@@ -29,7 +30,7 @@ def _find_tool(name: str) -> str:
     )
 
 
-def find_tool_or_none(name: str) -> str | None:
+def find_tool_or_none(name: str) -> Optional[str]:
     """Like _find_tool but returns None instead of raising — safe for health checks."""
     try:
         return _find_tool(name)

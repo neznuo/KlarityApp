@@ -1,13 +1,25 @@
 import SwiftUI
+import UserNotifications
 
 // MARK: - App Delegate
 
 /// Handles system-level callbacks that SwiftUI doesn't expose as modifiers.
-final class KlarityAppDelegate: NSObject, NSApplicationDelegate {
+final class KlarityAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
+    
+    override init() {
+        super.init()
+        UNUserNotificationCenter.current().delegate = self
+    }
+
     /// Called when the user clicks the Dock icon while all windows are hidden/closed.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         WindowManager.shared.showMainWindow()
         return true
+    }
+    
+    // Allows notifications to show even when app is focused
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .sound, .badge, .list])
     }
 }
 

@@ -1,6 +1,7 @@
 """Summary generation and retrieval endpoints."""
 
 from __future__ import annotations
+from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -14,7 +15,7 @@ from app.schemas import GenerateSummaryRequest, SummaryOut, TaskOut
 router = APIRouter(prefix="/meetings", tags=["summaries"])
 
 
-@router.get("/{meeting_id}/summary", response_model=SummaryOut | None)
+@router.get("/{meeting_id}/summary", response_model=Optional[SummaryOut])
 def get_summary(meeting_id: str, db: Session = Depends(get_db)):
     """Return the latest summary for a meeting, or null if not yet generated."""
     meeting = db.get(Meeting, meeting_id)

@@ -17,3 +17,12 @@ Write imperative, scope-prefixed commit messages such as `backend: add diarizati
 
 ## Security & Configuration Tips
 Keep secrets in `.env` files ignored by Git; use `.env.example` as the configuration checklist. macOS app keys belong in the Keychain, while backend-only keys load from `.env` and are bundled automatically by `scripts/bundle_backend.sh`.
+
+
+<claude-mem-context>
+# Memory Context
+
+# [KlarityApp] recent context, 2026-04-19 5:33pm GMT+5:30
+
+No previous sessions found.
+</claude-mem-context>

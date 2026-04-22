@@ -13,15 +13,34 @@ final class MenuBarManager: ObservableObject {
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
 
+    private var reminderPopover: NSPopover?
+    private var notificationTask: Task<Void, Never>?
+    private weak var recordingVM: RecordingViewModel?
+
     // MARK: Lifecycle
 
     /// Call once after appState and recordingVM are ready (from ContentView.task).
     func setup(appState: AppState, recordingVM: RecordingViewModel) {
+        self.recordingVM = recordingVM
         let shouldShow = UserDefaults.standard.object(forKey: "klarityShowMenuBar") == nil
             ? true
             : UserDefaults.standard.bool(forKey: "klarityShowMenuBar")
         if shouldShow {
             install(appState: appState, recordingVM: recordingVM)
+        }
+        
+        // Listen for reminder triggers
+        notificationTask = Task { [weak self] in
+            for await notification in NotificationCenter.default.notifications(named: NSNotification.Name("KlarityShowReminder")) {
+                let isTest = notification.userInfo?["isTest"] as? Bool ?? false
+                let isActive = self?.recordingVM?.isRecording == true || self?.recordingVM?.isPaused == true
+                
+                // Only show if it's a test, or an actual active recording
+                if isActive || isTest {
+                    let mins = notification.userInfo?["minutes"] as? Int ?? 30
+                    await self?.showReminder(minutes: mins)
+                }
+            }
         }
     }
 
@@ -49,15 +68,19 @@ final class MenuBarManager: ObservableObject {
 
     func uninstall() {
         popover?.performClose(nil)
+        reminderPopover?.performClose(nil)
         if let item = statusItem {
             NSStatusBar.system.removeStatusItem(item)
         }
         statusItem = nil
         popover = nil
+        reminderPopover = nil
+        notificationTask?.cancel()
     }
 
     func openMainWindow() {
         popover?.performClose(nil)
+        reminderPopover?.performClose(nil)
         WindowManager.shared.showMainWindow()
     }
 
@@ -71,6 +94,12 @@ final class MenuBarManager: ObservableObject {
 
     @objc private func handleClick(_ sender: NSStatusBarButton) {
         guard let pop = popover, let button = statusItem?.button else { return }
+        
+        // Close reminder if it's up
+        if reminderPopover?.isShown == true {
+            reminderPopover?.performClose(nil)
+        }
+        
         if pop.isShown {
             pop.performClose(sender)
         } else {
@@ -84,6 +113,58 @@ final class MenuBarManager: ObservableObject {
         let img = NSImage(systemSymbolName: name, accessibilityDescription: "Klarity")
         img?.isTemplate = true   // auto-adapts to light/dark menu bar tint
         item.button?.image = img
+    }
+    
+    private func showReminder(minutes: Int) {
+        // If the main menu is already open, do not disrupt it
+        if popover?.isShown == true { return }
+        guard let button = statusItem?.button else { return }
+        
+        if reminderPopover == nil {
+            let pop = NSPopover()
+            pop.behavior = .transient
+            self.reminderPopover = pop
+        }
+        
+        let root = VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "timer")
+                    .foregroundStyle(Color.orange)
+                    .font(.system(size: 14))
+                Text("Recording Active")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color(NSColor.labelColor))
+            }
+            Text("You have been recording for \(minutes) minutes. Remember to stop when finished.")
+                .font(.system(size: 12))
+                .foregroundStyle(Color(NSColor.secondaryLabelColor))
+                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(3)
+            
+            HStack(spacing: 12) {
+                Button("Stop Recording") {
+                    self.reminderPopover?.performClose(nil)
+                    Task { [weak self] in await self?.recordingVM?.stopAndProcess() }
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(Color.red)
+
+                Button("Dismiss") {
+                    self.reminderPopover?.performClose(nil)
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Color.blue)
+            }
+            .padding(.top, 4)
+        }
+        .padding(14)
+        .frame(width: 240)
+        
+        reminderPopover?.contentViewController = NSHostingController(rootView: root)
+        reminderPopover?.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        NSSound(named: "Glass")?.play()
     }
 }
 

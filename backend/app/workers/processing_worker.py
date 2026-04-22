@@ -12,6 +12,7 @@ It runs only when triggered manually through the API.
 """
 
 from __future__ import annotations
+from typing import Optional
 
 import json
 import uuid
@@ -47,7 +48,7 @@ def _get_db() -> Session:
     return SessionLocal()
 
 
-def _update_meeting_status(meeting_id: str, status: str, db: Session | None = None) -> None:
+def _update_meeting_status(meeting_id: str, status: str, db: Optional[Session] = None) -> None:
     close = db is None
     if db is None:
         db = _get_db()
@@ -75,7 +76,7 @@ def _record_job(meeting_id: str, job_type: str, db: Session) -> ProcessingJob:
     return job
 
 
-def _finish_job(job: ProcessingJob, db: Session, error: str | None = None) -> None:
+def _finish_job(job: ProcessingJob, db: Session, error: Optional[str] = None) -> None:
     job.status = "failed" if error else "done"
     job.error_message = error
     job.finished_at = datetime.now(timezone.utc)
@@ -203,7 +204,7 @@ def _extract_cluster_audio(
     norm_path: Path,
     segments: list,
     cluster_id: str,
-) -> "Path | None":
+) -> "Optional[Path]":
     """
     Extract and concatenate the audio windows belonging to a single speaker cluster.
     Uses FFmpeg to cut each segment by timestamp, then concatenates them.
@@ -259,7 +260,7 @@ def _extract_cluster_audio(
     return seg_paths[0]   # fallback to the longest single segment
 
 
-def run_speaker_matching_step(meeting_id: str, db: Session | None = None) -> None:
+def run_speaker_matching_step(meeting_id: str, db: Optional[Session] = None) -> None:
     """
     Compute per-cluster voice embeddings and match against the known people library.
     Each cluster gets its own embedding derived from its speaker's actual audio windows,
@@ -376,9 +377,9 @@ def run_speaker_matching_step(meeting_id: str, db: Session | None = None) -> Non
 
 def run_summarization_step(
     meeting_id: str,
-    provider_name: str | None = None,
-    model: str | None = None,
-    db: Session | None = None,
+    provider_name: Optional[str] = None,
+    model: Optional[str] = None,
+    db: Optional[Session] = None,
 ) -> None:
     """
     Generate meeting summary using the configured LLM provider.
@@ -466,6 +467,33 @@ def run_summarization_step(
                     description=item.get("task", ""),
                 )
                 db.add(task)
+
+            # Also create tasks for any key_decisions that imply a follow-up action
+            # (safety net for models that don't always promote decisions → action_items)
+            existing_descs = {item.get("task", "").lower() for item in result.action_items}
+            for decision in result.key_decisions:
+                if not isinstance(decision, dict):
+                    continue
+                decision_text = decision.get("decision", "")
+                decided_by = decision.get("decided_by") or None
+                if not decision_text:
+                    continue
+                # Heuristic: only promote if it contains action-implying words
+                action_words = ("will", "should", "need", "must", "going to", "plan",
+                                "implement", "set up", "create", "build", "send",
+                                "schedule", "review", "update", "follow", "prepare",
+                                "ensure", "confirm", "check", "arrange", "contact")
+                lower = decision_text.lower()
+                if any(w in lower for w in action_words):
+                    # Avoid duplicating if the LLM already added it to action_items
+                    if not any(lower in existing or existing in lower for existing in existing_descs):
+                        task = Task(
+                            id=str(uuid.uuid4()),
+                            meeting_id=meeting_id,
+                            raw_owner_text=decided_by,
+                            description=f"[From decision] {decision_text}",
+                        )
+                        db.add(task)
 
             meeting.summary_json_path = str(s_json_path)
             db.commit()

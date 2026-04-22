@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
+from typing import Optional
 from sqlalchemy import DateTime, ForeignKey, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -16,8 +17,8 @@ class Person(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     display_name: Mapped[str] = mapped_column(String, nullable=False)
-    notes: Mapped[str | None] = mapped_column(String, nullable=True)
-    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    notes: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    last_seen_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     meeting_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
@@ -37,8 +38,8 @@ class PersonEmbedding(Base):
     person_id: Mapped[str] = mapped_column(
         String, ForeignKey("people.id", ondelete="CASCADE"), nullable=False
     )
-    embedding_path: Mapped[str | None] = mapped_column(String, nullable=True)
-    source_meeting_id: Mapped[str | None] = mapped_column(
+    embedding_path: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    source_meeting_id: Mapped[Optional[str]] = mapped_column(
         String, ForeignKey("meetings.id"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)

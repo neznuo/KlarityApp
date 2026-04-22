@@ -252,6 +252,7 @@ struct MeetingSummary: Codable {
 struct MeetingTask: Identifiable, Codable {
     let id: String
     let meetingId: String
+    var meetingTitle: String?
     var ownerPersonId: String?
     var rawOwnerText: String?
     var description: String
@@ -261,6 +262,7 @@ struct MeetingTask: Identifiable, Codable {
     enum CodingKeys: String, CodingKey {
         case id, description, status
         case meetingId = "meeting_id"
+        case meetingTitle = "meeting_title"
         case ownerPersonId = "owner_person_id"
         case rawOwnerText = "raw_owner_text"
         case dueDate = "due_date"
