@@ -150,7 +150,7 @@ struct SettingsView: View {
             } header: {
                 Text("Calendar Sync")
             } footer: {
-                Text("Register OAuth apps first: Google Cloud Console (redirect: klarity://oauth/google/callback) and Azure Portal (redirect: klarity://oauth/microsoft/callback). Then add the client IDs to Info.plist as KlarityGoogleClientID / KlarityMicrosoftClientID.")
+                Text("Register OAuth apps first: Google Cloud Console (redirect: klarity://oauth/google/callback) and Azure Portal (redirect: klarity://oauth/microsoft/callback). Then add the client IDs to Secrets.xcconfig as GOOGLE_CLIENT_ID / MICROSOFT_CLIENT_ID.")
                     .foregroundStyle(.secondary)
             }
 

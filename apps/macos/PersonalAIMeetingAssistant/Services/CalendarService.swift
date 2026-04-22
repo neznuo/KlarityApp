@@ -23,8 +23,8 @@ final class CalendarService: NSObject, ASWebAuthenticationPresentationContextPro
     /// Format: com.googleusercontent.apps.CLIENT_ID (the ".apps.googleusercontent.com" suffix is removed).
     private var googleReverseClientID: String {
         let clientID = googleClientID
-        // e.g. "1072184484443-9fo3ciqd3a7rmrpa9uj0tpa4g3stl1n0.apps.googleusercontent.com"
-        // → "com.googleusercontent.apps.1072184484443-9fo3ciqd3a7rmrpa9uj0tpa4g3stl1n0"
+        // e.g. "XXXXXXXX-YYYY.apps.googleusercontent.com"
+        // → "com.googleusercontent.apps.XXXXXXXX-YYYY"
         let parts = clientID.components(separatedBy: ".")
         if parts.count >= 4 && clientID.hasSuffix(".apps.googleusercontent.com") {
             return "com.googleusercontent.apps." + parts.dropLast(3).joined(separator: ".")
