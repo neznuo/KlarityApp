@@ -2,11 +2,23 @@ import SwiftUI
 
 struct SettingsView: View {
     @StateObject private var vm = SettingsViewModel()
+    @StateObject private var permVM = PermissionsViewModel()
     @EnvironmentObject private var appState: AppState
     @AppStorage("klarityShowMenuBar") private var showMenuBarItem: Bool = true
+    @AppStorage("klarityHasCompletedOnboarding") private var onboardingCompleted: Bool = true
 
     var body: some View {
         Form {
+            // ── Permissions ───────────────────────────────────────────────
+            Section {
+                PermissionsDashboardView(permVM: permVM, compact: true)
+            } header: {
+                Text("Permissions")
+            } footer: {
+                Text("Klarity needs these permissions for meeting recording, call detection, and calendar sync. System audio permission is prompted on first recording.")
+                    .foregroundStyle(.secondary)
+            }
+
             // ── Appearance ───────────────────────────────────────────────────
             Section("Appearance") {
                 Picker("Color Scheme", selection: $appState.colorSchemePreference) {
@@ -173,21 +185,6 @@ struct SettingsView: View {
                 ))
                 .disabled(!appState.meetingDetector.isEnabled)
 
-                if appState.meetingDetector.detectCalls && !appState.meetingDetector.isAccessibilityGranted {
-                    HStack(spacing: 8) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.orange)
-                        Text("Accessibility access required for call detection")
-                            .font(AppTheme.Fonts.caption)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Grant Access") {
-                            appState.meetingDetector.openAccessibilityPreferences()
-                        }
-                        .font(AppTheme.Fonts.caption)
-                    }
-                }
-
                 Picker("Notify before meeting", selection: Binding(
                     get: { appState.meetingDetector.leadTime },
                     set: { appState.meetingDetector.leadTime = $0 }
@@ -199,7 +196,6 @@ struct SettingsView: View {
                 .disabled(!appState.meetingDetector.isEnabled || !appState.meetingDetector.detectCalendar)
 
                 Button {
-                    // Trigger a manual detection check for testing
                     appState.meetingDetector.checkCalendarSignal()
                     appState.meetingDetector.checkWindowTitleSignal()
                 } label: {
@@ -238,58 +234,6 @@ struct SettingsView: View {
             }
 
             Section {
-                @StateObject var permVM = PermissionsViewModel()
-
-                LabeledContent("Microphone") {
-                    if permVM.hasMicAccess {
-                        Label("Granted", systemImage: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                    } else {
-                        Button("Grant Access") { permVM.requestMicAccess() }
-                            .foregroundStyle(AppTheme.Colors.accentRed)
-                    }
-                }
-
-                LabeledContent("System Audio Recording") {
-                    switch permVM.hasSystemAudioAccess {
-                    case .some(true):
-                        Label("Granted", systemImage: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                    case .some(false):
-                        Text("Denied — start a recording to re-prompt")
-                            .foregroundStyle(AppTheme.Colors.accentRed)
-                            .font(AppTheme.Fonts.caption)
-                    case .none:
-                        Text("Prompted on first recording")
-                            .foregroundStyle(.secondary)
-                            .font(AppTheme.Fonts.caption)
-                    }
-                }
-
-                Button(role: .destructive) {
-                    permVM.resetPermissions()
-                } label: {
-                    Label("Reset All Permissions (Restarts App)", systemImage: "arrow.counterclockwise")
-                }
-                .padding(.top, 4)
-                .help("Resets all macOS privacy permissions for Klarity and restarts the app. Use this if permissions appear stuck.")
-
-                Button {
-                    vm.sendTestNotification()
-                } label: {
-                    Label("Test Recording Reminder", systemImage: "bell.fill")
-                }
-                .padding(.top, 4)
-                .help("Test the 30-minute reminder notification natively without waiting.")
-
-            } header: {
-                Text("Permissions & Privacy")
-            } footer: {
-                Text("System audio recording uses a purple dot indicator (not screen recording). The permission prompt appears once when you start your first recording.")
-                    .foregroundStyle(.secondary)
-            }
-
-            Section {
                 HStack {
                     Spacer()
                     if vm.isSaving {
@@ -302,12 +246,20 @@ struct SettingsView: View {
                     }
                     Spacer()
                 }
-            }
 
-            if let err = vm.errorMessage {
-                Section {
-                    Text(err).foregroundStyle(.red).font(.caption)
+                Button {
+                    vm.sendTestNotification()
+                } label: {
+                    Label("Test Recording Reminder", systemImage: "bell.fill")
                 }
+                .help("Test the 30-minute reminder notification natively without waiting.")
+
+                Button {
+                    onboardingCompleted = false
+                } label: {
+                    Label("Re-run Setup Wizard", systemImage: "arrow.counterclockwise")
+                }
+                .help("Show the first-run setup wizard again to reconfigure permissions, API keys, and calendar connections.")
             }
         }
         .formStyle(.grouped)
@@ -319,6 +271,7 @@ struct SettingsView: View {
         do {
             try await CalendarService.shared.authenticate(provider: provider)
             await vm.load()
+            permVM.checkCalendarAccess()
         } catch {
             // Errors surface in the system browser; silently ignore cancellations
         }
@@ -327,6 +280,7 @@ struct SettingsView: View {
     private func disconnectCalendar(_ provider: CalendarSource) {
         CalendarService.shared.disconnect(provider)
         Task { await vm.load() }
+        permVM.checkCalendarAccess()
     }
 
     /// Recommended affordable model for each provider.

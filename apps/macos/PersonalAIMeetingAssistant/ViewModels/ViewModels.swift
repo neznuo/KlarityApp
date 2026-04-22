@@ -702,6 +702,15 @@ final class SettingsViewModel: ObservableObject {
     }
 }
 
+// MARK: - PermissionState
+
+enum PermissionState {
+    case granted
+    case denied
+    case unknown      // not yet prompted (system audio)
+    case notApplicable
+}
+
 // MARK: - PermissionsViewModel
 
 import AVFoundation
@@ -711,13 +720,37 @@ import AppKit
 @MainActor
 final class PermissionsViewModel: ObservableObject {
     @Published var hasMicAccess = false
+    @Published var hasAccessibilityAccess = false
+    @Published var hasCalendarAccess = false
     // System audio capture via Core Audio Tap does not have a pre-flight API.
     // The permission prompt appears the first time AudioHardwareCreateProcessTap is called.
     // We infer "granted" from whether the last recording actually received audio.
     @Published var hasSystemAudioAccess: Bool? = nil   // nil = unknown (never recorded)
 
+    var totalPermissions: Int { 4 }
+
+    var grantedCount: Int {
+        var count = 0
+        if hasMicAccess { count += 1 }
+        if hasSystemAudioAccess == true { count += 1 }
+        if hasAccessibilityAccess { count += 1 }
+        if hasCalendarAccess { count += 1 }
+        return count
+    }
+
+    var readinessText: String { "\(grantedCount) of \(totalPermissions) permissions granted" }
+
     init() {
+        checkAll()
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in self?.checkAll() }
+    }
+
+    func checkAll() {
         checkPermissions()
+        checkAccessibility()
+        checkCalendarAccess()
     }
 
     func checkPermissions() {
@@ -730,6 +763,22 @@ final class PermissionsViewModel: ObservableObject {
                 self?.hasMicAccess = granted
             }
         }
+    }
+
+    func checkAccessibility() {
+        hasAccessibilityAccess = AXIsProcessTrustedWithOptions(
+            [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): false] as CFDictionary
+        )
+    }
+
+    func requestAccessibility() {
+        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
+        NSWorkspace.shared.open(url)
+    }
+
+    func checkCalendarAccess() {
+        hasCalendarAccess = CalendarService.shared.isConnected(.google)
+                         || CalendarService.shared.isConnected(.microsoft)
     }
 
     /// Call this after a recording attempt. `receivedAudio` is true if the tap
