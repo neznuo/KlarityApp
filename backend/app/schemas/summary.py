@@ -1,6 +1,7 @@
 """Summary Pydantic schemas."""
 
 from __future__ import annotations
+from typing import Optional
 
 from datetime import datetime
 
@@ -19,6 +20,6 @@ class SummaryOut(BaseModel):
     meeting_id: str
     provider: str
     model: str
-    summary_markdown: str | None
-    summary_json: str | None
+    summary_markdown: Optional[str]
+    summary_json: Optional[str]
     created_at: datetime

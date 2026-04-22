@@ -8,6 +8,7 @@ To add a new provider:
 """
 
 from __future__ import annotations
+from typing import Optional
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -19,8 +20,8 @@ class TranscriptWord:
     text: str
     start_ms: int
     end_ms: int
-    speaker_id: str | None = None
-    confidence: float | None = None
+    speaker_id: Optional[str] = None
+    confidence: Optional[float] = None
 
 
 @dataclass
@@ -29,7 +30,7 @@ class TranscriptSegment:
     start_ms: int
     end_ms: int
     text: str
-    confidence: float | None = None
+    confidence: Optional[float] = None
 
 
 @dataclass

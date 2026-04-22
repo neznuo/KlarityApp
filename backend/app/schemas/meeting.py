@@ -1,6 +1,7 @@
 """Meeting Pydantic schemas."""
 
 from __future__ import annotations
+from typing import Optional
 
 from datetime import datetime
 
@@ -9,8 +10,8 @@ from pydantic import BaseModel
 
 class MeetingCreate(BaseModel):
     title: str
-    calendar_event_id: str | None = None
-    calendar_source: str | None = None
+    calendar_event_id: Optional[str] = None
+    calendar_source: Optional[str] = None
 
 
 class MeetingStatusUpdate(BaseModel):
@@ -18,12 +19,12 @@ class MeetingStatusUpdate(BaseModel):
 
 
 class MeetingPatch(BaseModel):
-    title: str | None = None
-    audio_file_path: str | None = None
-    ended_at: datetime | None = None
-    duration_seconds: float | None = None
-    calendar_event_id: str | None = None
-    calendar_source: str | None = None
+    title: Optional[str] = None
+    audio_file_path: Optional[str] = None
+    ended_at: Optional[datetime] = None
+    duration_seconds: Optional[float] = None
+    calendar_event_id: Optional[str] = None
+    calendar_source: Optional[str] = None
 
 
 class MeetingOut(BaseModel):
@@ -31,16 +32,16 @@ class MeetingOut(BaseModel):
 
     id: str
     title: str
-    started_at: datetime | None
-    ended_at: datetime | None
-    duration_seconds: float | None
+    started_at: Optional[datetime]
+    ended_at: Optional[datetime]
+    duration_seconds: Optional[float]
     status: str
-    audio_file_path: str | None
-    normalized_audio_path: str | None
-    transcript_json_path: str | None
-    summary_json_path: str | None
-    calendar_event_id: str | None
-    calendar_source: str | None
+    audio_file_path: Optional[str]
+    normalized_audio_path: Optional[str]
+    transcript_json_path: Optional[str]
+    summary_json_path: Optional[str]
+    calendar_event_id: Optional[str]
+    calendar_source: Optional[str]
     created_at: datetime
     updated_at: datetime
 
@@ -50,9 +51,9 @@ class MeetingListOut(BaseModel):
 
     id: str
     title: str
-    started_at: datetime | None
-    ended_at: datetime | None
-    duration_seconds: float | None
+    started_at: Optional[datetime]
+    ended_at: Optional[datetime]
+    duration_seconds: Optional[float]
     status: str
     created_at: datetime
     speakers_preview: list[str] = []  # display names of identified people in this meeting

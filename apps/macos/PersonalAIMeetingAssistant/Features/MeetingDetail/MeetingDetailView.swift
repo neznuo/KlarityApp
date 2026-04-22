@@ -1,5 +1,6 @@
 import SwiftUI
 import AVKit
+import UniformTypeIdentifiers
 
 /// The main meeting detail page: tabbed Transcript / Summary with persistent audio player.
 struct MeetingDetailView: View {
@@ -28,6 +29,24 @@ struct MeetingDetailView: View {
                 tabButton(title: "Notes", tab: .summary)
                 tabButton(title: "Transcript", tab: .transcript)
                 Spacer()
+                
+                Button {
+                    exportCurrentTab()
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "square.and.arrow.up").font(.system(size: 10))
+                        Text("Export").font(AppTheme.Fonts.caption)
+                    }
+                    .foregroundStyle(AppTheme.Colors.primaryText)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(AppTheme.Colors.cardBackground)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                }
+                .buttonStyle(.plain)
+                .help("Export current tab")
+                .padding(.trailing, 10)
+                
                 if selectedTab == .transcript && !vm.speakers.isEmpty {
                     Button {
                         Task { await vm.recomputeSpeakerSuggestions() }
@@ -104,9 +123,17 @@ struct MeetingDetailView: View {
                     SummaryView(
                         summary: vm.summary,
                         tasks: vm.tasks,
+                        people: vm.people,
+                        speakers: vm.speakers,
                         isSummarizing: vm.isSummarizing,
                         onGenerate: {
                             Task { await vm.generateSummary() }
+                        },
+                        onTaskToggle: { task in
+                            Task { await vm.toggleTaskStatus(task) }
+                        },
+                        onUpdateOwner: { task, personId in
+                            Task { await vm.updateTaskOwner(task: task, personId: personId) }
                         }
                     )
                 }
@@ -283,6 +310,74 @@ struct MeetingDetailView: View {
         .buttonStyle(.plain)
         .animation(.easeInOut(duration: 0.15), value: selectedTab)
     }
+
+    // MARK: - Export Logic
+
+    private func exportCurrentTab() {
+        let defaultTitle = (vm.meeting?.title ?? "Meeting").replacingOccurrences(of: " ", with: "_")
+        let panel = NSSavePanel()
+        
+        if selectedTab == .transcript {
+            panel.allowedContentTypes = [.plainText]
+            panel.nameFieldStringValue = "\(defaultTitle)_Transcript.txt"
+        } else {
+            panel.allowedContentTypes = [.plainText, UTType("net.daringfireball.markdown") ?? .plainText]
+            panel.nameFieldStringValue = "\(defaultTitle)_Notes.md"
+        }
+        
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        
+        do {
+            if selectedTab == .transcript {
+                let content = generateTranscriptExport()
+                try content.write(to: url, atomically: true, encoding: .utf8)
+            } else {
+                var content = vm.summary?.summaryMarkdown ?? "No summary available."
+                if !vm.tasks.isEmpty {
+                    content += "\n\n## Action Items\n"
+                    for task in vm.tasks {
+                        let statusMarker = task.status.lowercased() == "completed" ? "[x]" : "[ ]"
+                        let assigneePart = (task.rawOwnerText?.isEmpty == false) ? " (Assignee: \(task.rawOwnerText!))" : ""
+                        content += "- \(statusMarker) \(task.description)\(assigneePart)\n"
+                    }
+                }
+                try content.write(to: url, atomically: true, encoding: .utf8)
+            }
+        } catch {
+            print("Failed to save export: \(error)")
+        }
+    }
+
+    private func generateTranscriptExport() -> String {
+        var lines: [String] = []
+        for segment in vm.transcript {
+            let speakerName = resolveSpeakerName(for: segment.clusterId)
+            let time = formatExportTimestamp(segment.startMs)
+            lines.append("[\(time)] \(speakerName):\n\(segment.text)")
+        }
+        return lines.joined(separator: "\n\n")
+    }
+
+    private func resolveSpeakerName(for clusterId: String?) -> String {
+        guard let clusterId = clusterId else { return "Speaker Unknown" }
+        guard let cluster = vm.speakers.first(where: { $0.id == clusterId }) else { return "Speaker Unknown" }
+        
+        if let pid = cluster.assignedPersonId, let match = vm.people.first(where: { $0.id == pid }) {
+            return match.displayName
+        }
+        return cluster.tempLabel
+    }
+
+    private func formatExportTimestamp(_ ms: Int) -> String {
+        let totalSeconds = ms / 1000
+        let h = totalSeconds / 3600
+        let m = (totalSeconds % 3600) / 60
+        let s = totalSeconds % 60
+        if h > 0 {
+            return String(format: "%d:%02d:%02d", h, m, s)
+        }
+        return String(format: "%02d:%02d", m, s)
+    }
 }
 
 // MARK: - Summary Sub-View
@@ -290,8 +385,17 @@ struct MeetingDetailView: View {
 struct SummaryView: View {
     let summary: MeetingSummary?
     let tasks: [MeetingTask]
+    let people: [Person]
+    let speakers: [SpeakerCluster]
     let isSummarizing: Bool
     let onGenerate: () -> Void
+    let onTaskToggle: (MeetingTask) -> Void
+    let onUpdateOwner: (MeetingTask, String?) -> Void
+
+    var meetingPeople: [Person] {
+        let personIds = Set(speakers.compactMap { $0.assignedPersonId })
+        return personIds.compactMap { id in people.first { $0.id == id } }
+    }
 
     var body: some View {
         if let summary {
@@ -344,7 +448,7 @@ struct SummaryView: View {
                         }
 
                         if let md = summary.summaryMarkdown, !md.isEmpty {
-                            MarkdownContentView(markdown: md)
+                            SelectableMeetingNotesView(markdown: md)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .opacity(isSummarizing ? 0.4 : 1)
                         } else {
@@ -358,21 +462,13 @@ struct SummaryView: View {
                                 .font(AppTheme.Fonts.header)
                                 .padding(.top, 8)
                             ForEach(tasks) { task in
-                                HStack(alignment: .top, spacing: 12) {
-                                    Image(systemName: task.status.lowercased() == "completed" ? "checkmark.circle.fill" : "circle")
-                                        .foregroundStyle(task.status.lowercased() == "completed" ? .green : .secondary)
-                                        .font(.title3)
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(task.description).font(AppTheme.Fonts.body)
-                                        if let w = task.rawOwnerText, !w.isEmpty {
-                                            Text("Assignee: \(w)")
-                                                .font(AppTheme.Fonts.caption)
-                                                .foregroundStyle(.secondary)
-                                        }
-                                    }
-                                }
-                                .opacity(isSummarizing ? 0.4 : 1)
-                                .padding(.vertical, 4)
+                                SummaryTaskRowView(
+                                    task: task,
+                                    meetingPeople: meetingPeople,
+                                    isDimmed: isSummarizing,
+                                    onToggle: onTaskToggle,
+                                    onUpdateOwner: onUpdateOwner
+                                )
                             }
                         }
                     }
@@ -405,5 +501,90 @@ struct SummaryView: View {
                 .buttonStyle(.borderedProminent)
             }
         }
+    }
+}
+
+// MARK: - Task Row with Assignee Dropdown
+
+private struct SummaryTaskRowView: View {
+    let task: MeetingTask
+    let meetingPeople: [Person]
+    let isDimmed: Bool
+    let onToggle: (MeetingTask) -> Void
+    let onUpdateOwner: (MeetingTask, String?) -> Void
+
+    private var isDone: Bool { task.status.lowercased() == "completed" }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Button {
+                onToggle(task)
+            } label: {
+                Image(systemName: isDone ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(isDone ? AppTheme.Colors.accentGreen : AppTheme.Colors.tertiaryText)
+                    .font(.title3)
+            }
+            .buttonStyle(.plain)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(task.description)
+                    .font(AppTheme.Fonts.body)
+                    .foregroundStyle(isDone ? AppTheme.Colors.tertiaryText : AppTheme.Colors.primaryText)
+                    .strikethrough(isDone, color: AppTheme.Colors.tertiaryText)
+
+                Menu {
+                    if task.ownerPersonId != nil || (task.rawOwnerText ?? "").isEmpty == false {
+                        Button(role: .destructive) {
+                            onUpdateOwner(task, nil)
+                        } label: {
+                            Label("Unassign", systemImage: "person.slash")
+                        }
+                        Divider()
+                    }
+                    ForEach(meetingPeople) { person in
+                        Button {
+                            onUpdateOwner(task, person.id)
+                        } label: {
+                            if person.id == task.ownerPersonId {
+                                Label(person.displayName, systemImage: "checkmark")
+                            } else {
+                                Text(person.displayName)
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "person.fill")
+                            .font(.system(size: 10))
+                            .foregroundStyle(assigneeColor)
+                        Text(assigneeLabel)
+                            .font(AppTheme.Fonts.caption)
+                            .foregroundStyle(assigneeColor)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(AppTheme.Colors.tertiaryText)
+                    }
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(AppTheme.Colors.hoverFill)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .opacity(isDimmed ? 0.4 : 1)
+        .padding(.vertical, 4)
+    }
+
+    private var assigneeLabel: String {
+        if let name = task.rawOwnerText, !name.isEmpty {
+            return name
+        }
+        return "Unassigned"
+    }
+
+    private var assigneeColor: Color {
+        (task.ownerPersonId != nil || (task.rawOwnerText ?? "").isEmpty == false)
+            ? AppTheme.Colors.brandPrimary : AppTheme.Colors.tertiaryText
     }
 }

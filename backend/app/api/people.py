@@ -13,16 +13,31 @@ from app.services.storage.file_layout import voice_embedding_path
 router = APIRouter(prefix="/people", tags=["people"])
 
 
-def _with_voice_status(person: Person) -> PersonOut:
+def _with_voice_status(person: Person, count: int | None = None) -> PersonOut:
     out = PersonOut.model_validate(person)
     out.has_voice_embedding = voice_embedding_path(person.id).exists()
+    if count is not None:
+        out.meeting_count = count
     return out
+
+def _get_person_meeting_count(db: Session, person_id: str) -> int:
+    from app.models.speaker import SpeakerCluster
+    from sqlalchemy import func
+    return db.query(func.count(func.distinct(SpeakerCluster.meeting_id))).filter(SpeakerCluster.assigned_person_id == person_id).scalar() or 0
 
 
 @router.get("", response_model=list[PersonOut])
 def list_people(db: Session = Depends(get_db)):
     people = db.query(Person).order_by(Person.display_name).all()
-    return [_with_voice_status(p) for p in people]
+    from app.models.speaker import SpeakerCluster
+    from sqlalchemy import func
+    counts = dict(
+        db.query(SpeakerCluster.assigned_person_id, func.count(func.distinct(SpeakerCluster.meeting_id)))
+        .filter(SpeakerCluster.assigned_person_id.isnot(None))
+        .group_by(SpeakerCluster.assigned_person_id)
+        .all()
+    )
+    return [_with_voice_status(p, count=counts.get(p.id, 0)) for p in people]
 
 
 @router.post("", response_model=PersonOut, status_code=201)
@@ -31,7 +46,7 @@ def create_person(body: PersonCreate, db: Session = Depends(get_db)):
     db.add(person)
     db.commit()
     db.refresh(person)
-    return _with_voice_status(person)
+    return _with_voice_status(person, count=0)
 
 
 @router.patch("/{person_id}", response_model=PersonOut)
@@ -43,7 +58,8 @@ def update_person(person_id: str, body: PersonUpdate, db: Session = Depends(get_
         setattr(person, key, value)
     db.commit()
     db.refresh(person)
-    return _with_voice_status(person)
+    count = _get_person_meeting_count(db, person.id)
+    return _with_voice_status(person, count=count)
 
 
 @router.delete("/{person_id}", status_code=204)

@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import UserNotifications
 
 // MARK: - HomeViewModel
 
@@ -9,6 +10,9 @@ final class HomeViewModel: ObservableObject {
     @Published var isLoading = false
     @Published var errorMessage: String?
     @Published var searchText = ""
+    /// Set to the ID of a meeting that was just deleted, so the view can
+    /// clear its selection. Reset to nil after the view consumes it.
+    @Published var deletedMeetingId: String?
 
     private var pollTask: Task<Void, Never>?
 
@@ -68,6 +72,7 @@ final class HomeViewModel: ObservableObject {
         do {
             try await APIClient.shared.deleteMeeting(id: meeting.id)
             meetings.removeAll { $0.id == meeting.id }
+            deletedMeetingId = meeting.id
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -111,6 +116,7 @@ final class RecordingViewModel: ObservableObject {
     let recorder = AudioRecorder()
 
     private var recorderCancellable: AnyCancellable?
+    private var reminderTimer: Timer?
 
     init() {
         // Forward recorder's published changes so the view re-renders on timer ticks, state changes, etc.
@@ -130,6 +136,9 @@ final class RecordingViewModel: ObservableObject {
             errorMessage = "Please enter a meeting title."
             return
         }
+        
+        // Request notifications for the 30-min reminder
+        try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
         // Guard against concurrent taps: by the time a second Task runs on the main actor,
         // the first task has already set isCreating = true.
         guard !isCreating && recorder.state == .idle else { return }
@@ -144,6 +153,7 @@ final class RecordingViewModel: ObservableObject {
             currentMeeting = meeting
             let audioURL = audioOutputURL(for: meeting.id)
             recorder.startRecording(to: audioURL)
+            scheduleReminder()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -158,6 +168,7 @@ final class RecordingViewModel: ObservableObject {
     }
 
     func stopAndProcess() async {
+        reminderTimer?.invalidate()
         guard let meeting = currentMeeting else { return }
         guard !isStopping else { return }
         isStopping = true
@@ -199,6 +210,28 @@ final class RecordingViewModel: ObservableObject {
 
     private func audioOutputURL(for meetingId: String) -> URL {
         meetingDir(for: meetingId).appendingPathComponent("audio.wav")
+    }
+
+    private func scheduleReminder() {
+        reminderTimer?.invalidate()
+        // Fire every 30 mins
+        reminderTimer = Timer.scheduledTimer(withTimeInterval: 30 * 60, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            Task { @MainActor in
+                if self.isRecording || self.isPaused {
+                    self.sendNotification()
+                }
+            }
+        }
+    }
+
+    private func sendNotification() {
+        let mins = Int(recorder.elapsedSeconds) / 60
+        NotificationCenter.default.post(
+            name: NSNotification.Name("KlarityShowReminder"),
+            object: nil,
+            userInfo: ["minutes": mins]
+        )
     }
 }
 
@@ -381,6 +414,55 @@ final class MeetingDetailViewModel: ObservableObject {
         }
         isRematching = false
     }
+
+    func toggleTaskStatus(_ task: MeetingTask) async {
+        let newStatus = task.status.lowercased() == "completed" ? "open" : "completed"
+        if let idx = tasks.firstIndex(where: { $0.id == task.id }) {
+            tasks[idx].status = newStatus
+        }
+        do {
+            let updated = try await APIClient.shared.updateTask(taskId: task.id, status: newStatus)
+            if let idx = tasks.firstIndex(where: { $0.id == task.id }) {
+                tasks[idx] = updated
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+            if let idx = tasks.firstIndex(where: { $0.id == task.id }) {
+                tasks[idx].status = task.status
+            }
+        }
+    }
+
+    func updateTaskOwner(task: MeetingTask, personId: String?) async {
+        let previousOwnerId = task.ownerPersonId
+        let previousOwnerText = task.rawOwnerText
+
+        if let idx = tasks.firstIndex(where: { $0.id == task.id }) {
+            if let pid = personId, !pid.isEmpty {
+                let person = people.first { $0.id == pid }
+                tasks[idx].ownerPersonId = pid
+                tasks[idx].rawOwnerText = person?.displayName
+            } else {
+                tasks[idx].ownerPersonId = nil
+                tasks[idx].rawOwnerText = nil
+            }
+        }
+
+        do {
+            // "" = unassign (backend clears both owner_person_id and raw_owner_text)
+            let assignId: String? = if let pid = personId, !pid.isEmpty { pid } else { "" }
+            let updated = try await APIClient.shared.updateTask(taskId: task.id, ownerPersonId: assignId)
+            if let idx = tasks.firstIndex(where: { $0.id == task.id }) {
+                tasks[idx] = updated
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+            if let idx = tasks.firstIndex(where: { $0.id == task.id }) {
+                tasks[idx].ownerPersonId = previousOwnerId
+                tasks[idx].rawOwnerText = previousOwnerText
+            }
+        }
+    }
 }
 
 // MARK: - PeopleViewModel
@@ -426,6 +508,139 @@ final class PeopleViewModel: ObservableObject {
             await load()
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+}
+
+// MARK: - ActionItemsViewModel
+
+@MainActor
+enum TaskFilter: String, CaseIterable, Identifiable {
+    case mine = "Assigned to Me"
+    case all  = "All Tasks"
+    var id: String { rawValue }
+}
+
+@MainActor
+enum StatusFilter: String, CaseIterable, Identifiable {
+    case open      = "Open"
+    case completed = "Done"
+    case all       = "All"
+    var id: String { rawValue }
+}
+
+@MainActor
+final class ActionItemsViewModel: ObservableObject {
+    @Published var tasks: [MeetingTask] = []
+    @Published var filter: TaskFilter = .mine
+    @Published var statusFilter: StatusFilter = .open
+    @Published var isLoading = false
+    @Published var errorMessage: String?
+
+    // Persisted display name used to match "Assigned to Me"
+    @Published var myName: String {
+        didSet { UserDefaults.standard.set(myName, forKey: "klarityMyName") }
+    }
+
+    init() {
+        myName = UserDefaults.standard.string(forKey: "klarityMyName") ?? ""
+    }
+
+    /// Tasks visible after applying both the assignee filter and status filter.
+    var filteredTasks: [MeetingTask] {
+        // 1. Assignee filter
+        let assigneeFiltered: [MeetingTask]
+        switch filter {
+        case .all:
+            assigneeFiltered = tasks
+        case .mine:
+            let name = myName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if name.isEmpty {
+                assigneeFiltered = tasks
+            } else {
+                assigneeFiltered = tasks.filter {
+                    ($0.rawOwnerText ?? "").lowercased().contains(name)
+                }
+            }
+        }
+
+        // 2. Status filter
+        switch statusFilter {
+        case .all:       return assigneeFiltered
+        case .open:      return assigneeFiltered.filter { $0.status.lowercased() != "completed" }
+        case .completed: return assigneeFiltered.filter { $0.status.lowercased() == "completed" }
+        }
+    }
+
+    /// Tasks grouped by meeting, sorted with most-recent meeting first.
+    var tasksByMeeting: [(meetingId: String, title: String, tasks: [MeetingTask])] {
+        let grouped = Dictionary(grouping: filteredTasks, by: { $0.meetingId })
+        return grouped.map { meetingId, taskList in
+            let title = taskList.first?.meetingTitle ?? "Meeting"
+            return (meetingId: meetingId, title: title, tasks: taskList)
+        }
+        .sorted { a, b in
+            let aDate = a.tasks.first?.status ?? ""  // keep ordering stable by using first task
+            let _ = aDate
+            // Sort by the first task's position in the original (desc by created_at) array
+            let aPos = tasks.firstIndex(where: { $0.meetingId == a.meetingId }) ?? Int.max
+            let bPos = tasks.firstIndex(where: { $0.meetingId == b.meetingId }) ?? Int.max
+            return aPos < bPos
+        }
+    }
+
+    func load() async {
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            tasks = try await APIClient.shared.fetchGlobalTasks()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func toggleTaskStatus(_ task: MeetingTask) async {
+        let newStatus = task.status.lowercased() == "completed" ? "open" : "completed"
+        if let idx = tasks.firstIndex(where: { $0.id == task.id }) {
+            tasks[idx].status = newStatus
+        }
+        do {
+            let updated = try await APIClient.shared.updateTask(taskId: task.id, status: newStatus)
+            if let idx = tasks.firstIndex(where: { $0.id == task.id }) {
+                tasks[idx] = updated
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+            if let idx = tasks.firstIndex(where: { $0.id == task.id }) {
+                tasks[idx].status = task.status
+            }
+        }
+    }
+
+    func deleteTask(_ task: MeetingTask) async {
+        tasks.removeAll { $0.id == task.id }
+        do {
+            try await APIClient.shared.deleteTask(taskId: task.id)
+        } catch {
+            errorMessage = error.localizedDescription
+            // Re-load to restore state if delete failed
+            await load()
+        }
+    }
+
+    func updateTaskOwner(_ task: MeetingTask, newOwner: String) async {
+        // Optimistic update
+        if let idx = tasks.firstIndex(where: { $0.id == task.id }) {
+            tasks[idx].rawOwnerText = newOwner.isEmpty ? nil : newOwner
+        }
+        do {
+            let updated = try await APIClient.shared.updateTask(taskId: task.id, ownerText: newOwner)
+            if let idx = tasks.firstIndex(where: { $0.id == task.id }) {
+                tasks[idx] = updated
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+            await load()
         }
     }
 }
@@ -476,6 +691,14 @@ final class SettingsViewModel: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    func sendTestNotification() {
+        NotificationCenter.default.post(
+            name: NSNotification.Name("KlarityShowReminder"),
+            object: nil,
+            userInfo: ["minutes": 30, "isTest": true]
+        )
     }
 }
 

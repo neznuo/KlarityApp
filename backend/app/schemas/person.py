@@ -1,6 +1,7 @@
 """Person Pydantic schemas."""
 
 from __future__ import annotations
+from typing import Optional
 
 from datetime import datetime
 
@@ -9,12 +10,12 @@ from pydantic import BaseModel
 
 class PersonCreate(BaseModel):
     display_name: str
-    notes: str | None = None
+    notes: Optional[str] = None
 
 
 class PersonUpdate(BaseModel):
-    display_name: str | None = None
-    notes: str | None = None
+    display_name: Optional[str] = None
+    notes: Optional[str] = None
 
 
 class PersonOut(BaseModel):
@@ -22,8 +23,8 @@ class PersonOut(BaseModel):
 
     id: str
     display_name: str
-    notes: str | None
-    last_seen_at: datetime | None
+    notes: Optional[str]
+    last_seen_at: Optional[datetime]
     meeting_count: int
     created_at: datetime
     updated_at: datetime

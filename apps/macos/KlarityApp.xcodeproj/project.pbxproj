@@ -29,6 +29,7 @@
 		C3D4E5F6A7B8C9D0E1F2A3B4 /* SelectableMeetingNotesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4E5F6A7B8C9D0E1F2A3B4C5 /* SelectableMeetingNotesView.swift */; };
 		E5F6A7B8C9D0E1F2A3B4C5D6 /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6A7B8C9D0E1F2A3B4C5D6E7 /* MenuBarView.swift */; };
 		F1E2D3C4B5A697886950A001 /* CalendarService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1D2C3B4A596877869504001 /* CalendarService.swift */; };
+		BBBB0000000000000000000B /* ActionItemsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA0000000000000000000A /* ActionItemsView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -57,6 +58,7 @@
 		B21284A2653E2777A4D408C0 /* AudioRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRecorder.swift; sourceTree = "<group>"; };
 		CB8A27630A160812A4FA6C8F /* KlarityApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KlarityApp.swift; sourceTree = "<group>"; };
 		DCE9450AD3F25B91E869969B /* BackendProcessManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackendProcessManager.swift; sourceTree = "<group>"; };
+		AAAA0000000000000000000A /* ActionItemsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActionItemsView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -132,6 +134,7 @@
 			isa = PBXGroup;
 			children = (
 				4B53D2D8CE73A23CC54E1DE6 /* Home */,
+				CCCC0000000000000000000C /* ActionItems */,
 				A8B9C0D1E2F3A4B5C6D7E8F9 /* MenuBar */,
 				22C410C77F70FF58529017D5 /* MeetingDetail */,
 				5CBA02661DCD7D32EFD06CB8 /* People */,
@@ -209,6 +212,14 @@
 				7DBA6CC50E26967DDDAFA002 /* KeychainService.swift */,
 			);
 			path = Services;
+			sourceTree = "<group>";
+		};
+		CCCC0000000000000000000C /* ActionItems */ = {
+			isa = PBXGroup;
+			children = (
+				AAAA0000000000000000000A /* ActionItemsView.swift */,
+			);
+			path = ActionItems;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -321,6 +332,7 @@
 				C9E65B07986A87A5BBB136B4 /* MeetingDetailView.swift in Sources */,
 				81F7A73700626A8109757E25 /* Models.swift in Sources */,
 				BCE72884D9DF2A4747F1ABEB /* PeopleView.swift in Sources */,
+				BBBB0000000000000000000B /* ActionItemsView.swift in Sources */,
 				7256AA73C3D692522B9AB684 /* RecordingView.swift in Sources */,
 				35F9A5DA1202415632618537 /* SettingsView.swift in Sources */,
 				4049BBC2197F916E10B9AE49 /* TranscriptView.swift in Sources */,

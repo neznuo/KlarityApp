@@ -197,6 +197,23 @@ final class APIClient {
         try await get("/meetings/\(meetingId)/tasks")
     }
 
+    func fetchGlobalTasks() async throws -> [MeetingTask] {
+        try await get("/tasks")
+    }
+
+    /// - Parameter ownerPersonId: Person ID to assign, or "" to unassign. Nil = don't change.
+    func updateTask(taskId: String, status: String? = nil, ownerText: String? = nil, ownerPersonId: String? = nil) async throws -> MeetingTask {
+        var body: [String: String] = [:]
+        if let s = status { body["status"] = s }
+        if let o = ownerText { body["raw_owner_text"] = o }
+        if let pid = ownerPersonId { body["owner_person_id"] = pid }
+        return try await patch("/tasks/\(taskId)", body: body)
+    }
+
+    func deleteTask(taskId: String) async throws {
+        try await delete("/tasks/\(taskId)")
+    }
+
     // MARK: - People
 
     func fetchPeople() async throws -> [Person] {

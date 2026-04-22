@@ -91,6 +91,9 @@ struct ContentView: View {
             case .contacts:
                 PeopleView()
                     .navigationTitle("Contacts")
+            case .actionItems:
+                ActionItemsView()
+                    .navigationTitle("Action Items")
             case .settings:
                 SettingsView()
                     .navigationTitle("Settings")

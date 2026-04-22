@@ -213,6 +213,15 @@ struct SettingsView: View {
                 }
                 .padding(.top, 4)
                 .help("Resets all macOS privacy permissions for Klarity and restarts the app. Use this if permissions appear stuck.")
+
+                Button {
+                    vm.sendTestNotification()
+                } label: {
+                    Label("Test Recording Reminder", systemImage: "bell.fill")
+                }
+                .padding(.top, 4)
+                .help("Test the 30-minute reminder notification natively without waiting.")
+
             } header: {
                 Text("Permissions & Privacy")
             } footer: {

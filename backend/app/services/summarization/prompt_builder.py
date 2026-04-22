@@ -185,8 +185,9 @@ def _build_markdown(r: SummaryResult) -> str:  # noqa: C901
 
 
 # Inline fallback prompt used when summary_prompt.txt is absent
-INLINE_PROMPT = """You are an expert meeting analyst. Analyze the meeting transcript and return ONLY a valid JSON object:
+INLINE_PROMPT = """You are an expert meeting analyst. Analyze the meeting transcript and return ONLY a valid JSON object.
 
+SCHEMA:
 {
   "meeting_summary": "3-5 sentence executive overview",
   "topics_discussed": [{"topic": "Name", "summary": "What was discussed", "outcome": "resolved|deferred|in_progress|informational|no_consensus"}],
@@ -199,4 +200,14 @@ INLINE_PROMPT = """You are an expert meeting analyst. Analyze the meeting transc
   "follow_up_email": "Complete professional follow-up email draft"
 }
 
-RULES: Do NOT fabricate names, owners, or dates. Return valid JSON only."""
+RULES FOR action_items — READ CAREFULLY:
+1. Capture EVERY task, to-do, follow-up, or commitment mentioned anywhere in the transcript — even if stated indirectly or casually (e.g. "I'll handle that", "someone should", "we need to", "let's make sure").
+2. ALSO examine each key_decision: if a decision implies someone needs to DO something to implement or follow through on it, create a corresponding action_item. Do not leave decisions as mere notes if they have an actionable consequence.
+3. Include tasks implied by open questions assigned to someone (e.g. "John will look into this").
+4. If an owner name is mentioned, include it. Do NOT leave owner blank if a name was said.
+5. Assign priority: high = blocking or time-sensitive, medium = important but not urgent, low = nice-to-have.
+6. Be LIBERAL — it is better to include too many tasks than to miss one.
+
+GENERAL RULES:
+- Do NOT fabricate names, owners, or dates not mentioned in the transcript.
+- Return valid JSON only. No markdown fences, no commentary."""

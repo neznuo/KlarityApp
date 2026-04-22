@@ -1,6 +1,7 @@
 """Task Pydantic schema."""
 
 from __future__ import annotations
+from typing import Optional
 
 from datetime import date, datetime
 
@@ -12,9 +13,16 @@ class TaskOut(BaseModel):
 
     id: str
     meeting_id: str
-    owner_person_id: str | None
-    raw_owner_text: str | None
+    meeting_title: Optional[str] = None
+    owner_person_id: Optional[str]
+    raw_owner_text: Optional[str]
     description: str
-    due_date: date | None
+    due_date: Optional[date]
     status: str
     created_at: datetime
+
+class TaskUpdate(BaseModel):
+    status: Optional[str] = None
+    description: Optional[str] = None
+    raw_owner_text: Optional[str] = None
+    owner_person_id: Optional[str] = None

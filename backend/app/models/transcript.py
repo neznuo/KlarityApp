@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
+from typing import Optional
 from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -18,13 +19,13 @@ class TranscriptSegment(Base):
     meeting_id: Mapped[str] = mapped_column(
         String, ForeignKey("meetings.id", ondelete="CASCADE"), nullable=False
     )
-    cluster_id: Mapped[str | None] = mapped_column(
+    cluster_id: Mapped[Optional[str]] = mapped_column(
         String, ForeignKey("speaker_clusters.id"), nullable=True
     )
     start_ms: Mapped[int] = mapped_column(Integer, nullable=False)
     end_ms: Mapped[int] = mapped_column(Integer, nullable=False)
     text: Mapped[str] = mapped_column(String, nullable=False)
-    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
-    audio_snippet_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    audio_snippet_path: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)

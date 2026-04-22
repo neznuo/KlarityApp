@@ -1,6 +1,7 @@
 """Ollama local LLM summarization provider."""
 
 from __future__ import annotations
+from typing import Optional
 
 import json
 
@@ -61,7 +62,7 @@ class OllamaProvider(SummarizationProvider):
         return parse_summary_json(raw_json)
 
 
-def _extract_json(text: str) -> dict | None:
+def _extract_json(text: str) -> Optional[dict]:
     """Try to pull a JSON object out of a text response that contains extra prose."""
     start = text.find("{")
     end = text.rfind("}") + 1

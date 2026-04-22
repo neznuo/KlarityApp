@@ -75,6 +75,7 @@ final class AudioRecorder: NSObject, ObservableObject {
     private let hasSysAudioLock = OSAllocatedUnfairLock(initialState: false)
     private let hasMicAudioLock = OSAllocatedUnfairLock(initialState: false)
     private let isPausedLock = OSAllocatedUnfairLock(initialState: false)
+    private let isReconfiguringLock = OSAllocatedUnfairLock(initialState: false)
 
     // MARK: Timers
 
@@ -266,6 +267,10 @@ final class AudioRecorder: NSObject, ObservableObject {
         let outputUID = try defaultDeviceUID(selector: kAudioHardwarePropertyDefaultOutputDevice)
         logger.info("Output UID: \(outputUID)")
 
+        // Pre-create the system audio temp WAV file so it can persist across graph rebuilds
+        sysAudioFile = try AVAudioFile(forWriting: sysURL, settings: pcm16.settings,
+                                        commonFormat: .pcmFormatInt16, interleaved: true)
+
         // ── PATH 2: AVAudioEngine → microphone ────────────────────────────
         // MUST start before creating the Core Audio aggregate device.
         // AudioHardwareCreateAggregateDevice triggers a HAL reconfiguration; calling
@@ -274,7 +279,14 @@ final class AudioRecorder: NSObject, ObservableObject {
         await setupMicCapture(outputURL: micURL, outputFormat: pcm16)
 
         // ── PATH 1: Core Audio Tap → system audio ──────────────────────────
+        try await setupSystemCapture(outputUID: outputUID, pcm16: pcm16)
 
+        // Register device change listeners
+        installDeviceChangeListeners()
+    }
+
+    @available(macOS 14.2, *)
+    private func setupSystemCapture(outputUID: String, pcm16: AVAudioFormat) async throws {
         let tapDesc = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
         tapDesc.muteBehavior = .unmuted
 
@@ -345,7 +357,7 @@ final class AudioRecorder: NSObject, ObservableObject {
         if AudioObjectGetPropertyData(localAggID, &aggrSrAddr, 0, nil, &aggrSrSize, &aggrSr) == noErr, aggrSr > 0 {
             deviceSampleRate = aggrSr
         }
-        logger.info("Aggregate device sample rate: \(self.deviceSampleRate) Hz")
+        logger.info("Aggregate device sample rate: \(deviceSampleRate) Hz")
 
         // Converter: mono float32 @ device rate → mono int16 @ 16kHz
         let monoFmt = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: deviceSampleRate, channels: 1, interleaved: true)!
@@ -354,10 +366,6 @@ final class AudioRecorder: NSObject, ObservableObject {
             throw AudioRecorderError.converterCreationFailed(monoFmt, pcm16)
         }
         tapConverter = conv
-
-        // System audio temp WAV
-        sysAudioFile = try AVAudioFile(forWriting: sysURL, settings: pcm16.settings,
-                                        commonFormat: .pcmFormatInt16, interleaved: true)
 
         // IOProc
         var localProcID: AudioDeviceIOProcID?
@@ -373,13 +381,54 @@ final class AudioRecorder: NSObject, ObservableObject {
             AudioDeviceDestroyIOProcID(localAggID, procID); ioProcID = nil
             throw AudioRecorderError.deviceStartFailed(startSt)
         }
+    }
 
-        // Register device change listeners
-        installDeviceChangeListeners()
+    // MARK: - Dynamic Graph Reconfiguration
+    
+    @available(macOS 14.2, *)
+    func triggerRebuildGraph() {
+        Task {
+            do {
+                try await rebuildAudioGraph()
+            } catch {
+                logger.error("Failed to rebuild audio graph: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    @available(macOS 14.2, *)
+    private func rebuildAudioGraph() async throws {
+        guard state == .recording || state == .paused else { return }
+        logger.info("Rebuilding audio graph due to device change...")
+        
+        isReconfiguringLock.withLock { $0 = true }
+        defer { isReconfiguringLock.withLock { $0 = false } }
+        
+        // Wait for current writes to complete gracefully
+        await withCheckedContinuation { continuation in
+            sysWriterQueue.async { continuation.resume() }
+        }
+        await withCheckedContinuation { continuation in
+            micWriterQueue.async { continuation.resume() }
+        }
+
+        // Teardown everything BUT the temp files
+        teardownCoreAudio()
+        stopMicCapture()
+
+        // Re-read output UID
+        let outputUID = try defaultDeviceUID(selector: kAudioHardwarePropertyDefaultOutputDevice)
+        logger.info("New Output UID: \(outputUID)")
+        
+        let pcm16 = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16_000, channels: 1, interleaved: true)!
+
+        await setupMicCapture(outputURL: micTempURL, outputFormat: pcm16)
+        try await setupSystemCapture(outputUID: outputUID, pcm16: pcm16)
+        logger.info("Audio graph successfully rebuilt.")
     }
 
     // Non-throwing: any failure just skips mic capture. Recording always continues with system audio.
-    private func setupMicCapture(outputURL: URL, outputFormat: AVAudioFormat) async {
+    private func setupMicCapture(outputURL: URL?, outputFormat: AVAudioFormat) async {
         // Request mic permission if needed. Denied → skip mic, not a recording failure.
         let status = AVCaptureDevice.authorizationStatus(for: .audio)
         if status == .notDetermined {
@@ -410,12 +459,14 @@ final class AudioRecorder: NSObject, ObservableObject {
             return
         }
 
-        guard let file = try? AVAudioFile(forWriting: outputURL, settings: outputFormat.settings,
-                                          commonFormat: .pcmFormatInt16, interleaved: true) else {
-            logger.error("Could not create mic output file — recording system audio only")
-            return
+        if micAudioFile == nil, let url = outputURL {
+            guard let file = try? AVAudioFile(forWriting: url, settings: outputFormat.settings,
+                                              commonFormat: .pcmFormatInt16, interleaved: true) else {
+                logger.error("Could not create mic output file — recording system audio only")
+                return
+            }
+            micAudioFile = file
         }
-        micAudioFile = file
 
         let engine = AVAudioEngine()
 
@@ -451,6 +502,7 @@ final class AudioRecorder: NSObject, ObservableObject {
 
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: tapFormat, block: { [weak self] buffer, _ in
             guard let self else { return }
+            if self.isReconfiguringLock.withLock({ $0 }) { return }
             let paused = self.isPausedLock.withLock { $0 }
             guard !paused, buffer.frameLength > 0 else { return }
 
@@ -503,6 +555,7 @@ final class AudioRecorder: NSObject, ObservableObject {
     // MARK: - IOProc (Core Audio real-time thread — system audio only)
 
     private func handleTapIOProc(inInputData: UnsafePointer<AudioBufferList>) {
+        if isReconfiguringLock.withLock({ $0 }) { return }
         let paused = isPausedLock.withLock { $0 }
         guard !paused,
               let monoFmt   = monoInputFormat,
@@ -624,9 +677,10 @@ final class AudioRecorder: NSObject, ObservableObject {
             mSelector: kAudioHardwarePropertyDefaultOutputDevice,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain)
+        let selfPtr = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
         let outputStatus = AudioObjectAddPropertyListener(
             AudioObjectID(kAudioObjectSystemObject), &outputAddr,
-            klarityAudioDeviceChangedCallback, nil)
+            klarityAudioDeviceChangedCallback, selfPtr)
         if outputStatus == noErr {
             outputDeviceChangeListenerInstalled = true
         }
@@ -638,7 +692,7 @@ final class AudioRecorder: NSObject, ObservableObject {
             mElement: kAudioObjectPropertyElementMain)
         let inputStatus = AudioObjectAddPropertyListener(
             AudioObjectID(kAudioObjectSystemObject), &inputAddr,
-            klarityAudioDeviceChangedCallback, nil)
+            klarityAudioDeviceChangedCallback, selfPtr)
         if inputStatus == noErr {
             inputDeviceChangeListenerInstalled = true
         }
@@ -650,9 +704,10 @@ final class AudioRecorder: NSObject, ObservableObject {
                 mSelector: kAudioHardwarePropertyDefaultOutputDevice,
                 mScope: kAudioObjectPropertyScopeGlobal,
                 mElement: kAudioObjectPropertyElementMain)
+            let selfPtr = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
             AudioObjectRemovePropertyListener(
                 AudioObjectID(kAudioObjectSystemObject), &outputAddr,
-                klarityAudioDeviceChangedCallback, nil)
+                klarityAudioDeviceChangedCallback, selfPtr)
             outputDeviceChangeListenerInstalled = false
         }
         if inputDeviceChangeListenerInstalled {
@@ -660,9 +715,10 @@ final class AudioRecorder: NSObject, ObservableObject {
                 mSelector: kAudioHardwarePropertyDefaultInputDevice,
                 mScope: kAudioObjectPropertyScopeGlobal,
                 mElement: kAudioObjectPropertyElementMain)
+            let selfPtr = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
             AudioObjectRemovePropertyListener(
                 AudioObjectID(kAudioObjectSystemObject), &inputAddr,
-                klarityAudioDeviceChangedCallback, nil)
+                klarityAudioDeviceChangedCallback, selfPtr)
             inputDeviceChangeListenerInstalled = false
         }
     }
@@ -929,12 +985,17 @@ private func klarityAudioDeviceChangedCallback(
     _: AudioObjectID,
     _: UInt32,
     _: UnsafePointer<AudioObjectPropertyAddress>,
-    _: UnsafeMutableRawPointer?
+    clientData: UnsafeMutableRawPointer?
 ) -> OSStatus {
-    // Can't call MainActor methods from here, so dispatch to main queue for logging.
+    guard let clientData else { return noErr }
+    let recorder = Unmanaged<AudioRecorder>.fromOpaque(clientData).takeUnretainedValue()
+    
     DispatchQueue.main.async {
         let logger = AppLogger(category: "AudioRecorder")
-        logger.warn("Default audio device changed during recording — audio capture may be affected. If you changed audio devices (e.g., plugged/unplugged headphones), the recording may contain silence from the point of change.")
+        logger.warn("Default audio device changed during recording. Initiating dynamic graph rebuild...")
+        if #available(macOS 14.2, *) {
+            recorder.triggerRebuildGraph()
+        }
     }
     return noErr
 }

@@ -6,6 +6,7 @@ using cosine similarity against the known people library.
 """
 
 from __future__ import annotations
+from typing import Optional
 
 from pathlib import Path
 
@@ -69,12 +70,12 @@ class SpeakerEmbeddingService:
         self,
         query_embedding: np.ndarray,
         candidate_embeddings: dict[str, np.ndarray],
-    ) -> tuple[str | None, float]:
+    ) -> Optional[tuple[str], float]:
         """
         Find the best matching person among candidate embeddings.
         Returns (person_id_or_None, similarity_score).
         """
-        best_id: str | None = None
+        best_id: Optional[str] = None
         best_sim = 0.0
         for person_id, emb in candidate_embeddings.items():
             sim = _cosine_similarity(query_embedding, emb)
@@ -86,7 +87,7 @@ class SpeakerEmbeddingService:
     def check_duplicates(
         self,
         cluster_embeddings: dict[str, np.ndarray],
-        threshold: float | None = None,
+        threshold: Optional[float] = None,
     ) -> list[tuple[str, str, float]]:
         """
         Look for potential duplicate speaker clusters within a meeting.
