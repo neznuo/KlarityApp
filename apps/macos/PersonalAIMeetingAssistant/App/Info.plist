@@ -50,13 +50,13 @@
 			<string>com.googleusercontent.apps</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>com.googleusercontent.apps.1072184484443-ot4bvnhs4dshgvh61v4g87u99mqmk5kn</string>
+				<string>$(GOOGLE_REVERSE_CLIENT_ID)</string>
 			</array>
 		</dict>
 	</array>
 	<key>KlarityGoogleClientID</key>
-	<string>1072184484443-ot4bvnhs4dshgvh61v4g87u99mqmk5kn.apps.googleusercontent.com</string>
+	<string>$(GOOGLE_CLIENT_ID)</string>
 	<key>KlarityMicrosoftClientID</key>
-	<string>REPLACE_WITH_MICROSOFT_CLIENT_ID</string>
+	<string>$(MICROSOFT_CLIENT_ID)</string>
 </dict>
 </plist>

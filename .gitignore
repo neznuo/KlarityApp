@@ -68,6 +68,9 @@ storage/logs/
 *.p12
 *.cer
 
+# Xcode secrets (OAuth client IDs)
+Secrets.xcconfig
+
 # Logs
 *.log
 logs/
