@@ -80,3 +80,7 @@ node_modules/
 
 # Remotion renders
 marketing/remotion/out/
+
+# Agent / superpowers tooling
+.agent/
+.superpowers/
