@@ -72,6 +72,74 @@ struct SettingsView: View {
                 }
             }
 
+            // ── Backend Environment ──────────────────────────────────────────
+            Section {
+                HStack(spacing: 10) {
+                    Image(systemName: appState.backendVenvHealthy ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                        .foregroundStyle(appState.backendVenvHealthy ? AppTheme.Colors.accentGreen : AppTheme.Colors.accentOrange)
+                        .font(.system(size: 18))
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(appState.backendVenvHealthy ? "Backend Environment Ready" : "Backend Environment Missing")
+                            .font(AppTheme.Fonts.listTitle)
+                            .foregroundStyle(AppTheme.Colors.primaryText)
+                        Text(appState.backendVenvHealthy
+                             ? "Python environment is healthy and backend is running."
+                             : "The bundled Python environment is broken or missing. Create a local environment to fix this.")
+                            .font(AppTheme.Fonts.caption)
+                            .foregroundStyle(AppTheme.Colors.secondaryText)
+                            .lineLimit(2)
+                    }
+
+                    Spacer()
+
+                    if appState.isCreatingBackend {
+                        ProgressView()
+                            .scaleEffect(0.8)
+                    } else if !appState.backendVenvHealthy {
+                        Button {
+                            Task { await appState.createBackendEnvironment() }
+                        } label: {
+                            Text("Create Backend")
+                                .font(AppTheme.Fonts.body)
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 6)
+                                .background(AppTheme.Colors.brandPrimary)
+                                .clipShape(RoundedRectangle(cornerRadius: AppTheme.Metrics.cornerRadius))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                if appState.isCreatingBackend {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ProgressView()
+                            .frame(maxWidth: .infinity)
+                        Text(appState.backendCreationStatus)
+                            .font(AppTheme.Fonts.caption)
+                            .foregroundStyle(AppTheme.Colors.secondaryText)
+                    }
+                    .padding(.top, 4)
+                }
+
+                if appState.backendVenvHealthy {
+                    Button {
+                        Task { await appState.createBackendEnvironment() }
+                    } label: {
+                        Label("Repair Backend Environment", systemImage: "arrow.counterclockwise")
+                            .font(AppTheme.Fonts.caption)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(AppTheme.Colors.secondaryText)
+                }
+            } header: {
+                Text("Backend Environment")
+            } footer: {
+                Text("Klarity uses a local Python environment for transcription and summarization. If the bundled environment is broken (e.g. after moving the app), click Create Backend to rebuild it.")
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Transcription") {
                 Picker("Provider", selection: $vm.settings.defaultTranscriptionProvider) {
                     Text("ElevenLabs Scribe").tag("elevenlabs")

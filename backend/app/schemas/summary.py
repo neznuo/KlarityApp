@@ -1,16 +1,16 @@
 """Summary Pydantic schemas."""
 
 from __future__ import annotations
-from typing import Optional
+from typing import Literal, Optional
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class GenerateSummaryRequest(BaseModel):
-    provider: str = "ollama"   # openai | ollama | anthropic | gemini
-    model: str = "llama3"
+    provider: Literal["openai", "ollama", "anthropic", "gemini"] = "ollama"
+    model: str = Field(default="llama3", max_length=100)
 
 
 class SummaryOut(BaseModel):

@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Optional
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -93,7 +94,8 @@ class AudioPreprocessor:
         cmd.append(str(output_path))
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
+            sanitized = re.sub(r"(?:/[^\s:]+)+", "<path>", result.stderr)
             raise RuntimeError(
-                f"FFmpeg preprocessing failed:\n{result.stderr}"
+                f"FFmpeg preprocessing failed:\n{sanitized}"
             )
         return output_path

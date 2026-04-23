@@ -66,6 +66,9 @@ final class AppState: ObservableObject {
 
     @Published var backendReachable: Bool = false
     @Published var backendStartupError: String?
+    @Published var backendVenvHealthy: Bool = false
+    @Published var isCreatingBackend: Bool = false
+    @Published var backendCreationStatus: String = ""
     @Published var dependencies: DependenciesResult?
 
     /// "system" | "light" | "dark" — persisted across launches.
@@ -86,34 +89,97 @@ final class AppState: ObservableObject {
     let meetingDetector = MeetingDetectorService()
 
     private let backend = BackendProcessManager.shared
+    private var healthPollTimer: Timer?
+
+    /// True when the backend process is running AND the venv is healthy.
+    var backendReady: Bool { backendReachable && backendVenvHealthy }
 
     init() {
         AppState.shared = self
 
-        // Start the embedded backend on launch, then verify it's reachable.
         Task { @MainActor in
-            backend.start()
-            // checkBackend is called by BackendProcessManager after the 2s warmup,
-            // but also poll here as a fallback.
-            for _ in 0..<10 {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                let reachable = await APIClient.shared.healthCheck()
-                if reachable {
-                    self.backendReachable = true
-                    await self.checkDependencies()
-                    return
+            // 1. Validate venv before attempting to start backend.
+            backend.checkVenvHealth()
+            self.backendVenvHealthy = backend.isVenvHealthy
+
+            // 2. Only start backend if venv is healthy.
+            if backend.isVenvHealthy {
+                backend.start()
+                // checkBackend is called by BackendProcessManager after the 2s warmup,
+                // but also poll here as a fallback.
+                for _ in 0..<10 {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    let reachable = await APIClient.shared.healthCheck()
+                    if reachable {
+                        self.backendReachable = true
+                        await self.checkDependencies()
+                        return
+                    }
                 }
+                // If still not up after 10s, surface the startup error.
+                self.backendStartupError = backend.startupError ?? "Backend did not respond within 10 seconds."
+            } else {
+                self.backendStartupError = "Python backend environment is missing or broken. Go to Settings → Backend Environment to create it."
             }
-            // If still not up after 10s, surface the startup error.
-            self.backendStartupError = backend.startupError ?? "Backend did not respond within 10 seconds."
+            self.healthPollTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+                self?.pollBackendHealth()
+            }
+        }
+    }
+
+    @MainActor
+    func pollBackendHealth() {
+        if !backend.isRunning {
+            backendReachable = false
+        } else {
+            Task { await checkBackend() }
         }
     }
 
     @MainActor
     func checkBackend() async {
-        backendReachable = await APIClient.shared.healthCheck()
-        if backendReachable {
-            await checkDependencies()
+        backend.checkVenvHealth()
+        backendVenvHealthy = backend.isVenvHealthy
+        if backendVenvHealthy {
+            backendReachable = await APIClient.shared.healthCheck()
+            if backendReachable {
+                await checkDependencies()
+            }
+        }
+    }
+
+    @MainActor
+    func createBackendEnvironment() async {
+        guard !isCreatingBackend else { return }
+        isCreatingBackend = true
+        defer { isCreatingBackend = false }
+
+        // Mirror venv creation status into AppState so the UI updates live.
+        let statusTask = Task {
+            while !Task.isCancelled {
+                self.backendCreationStatus = backend.venvCreationStatus
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
+        }
+
+        await backend.createLocalVenv()
+        statusTask.cancel()
+        self.backendCreationStatus = backend.venvCreationStatus
+
+        backendVenvHealthy = backend.isVenvHealthy
+        if backendVenvHealthy {
+            backend.start()
+            // Wait for backend to come up
+            for _ in 0..<10 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                let reachable = await APIClient.shared.healthCheck()
+                if reachable {
+                    backendReachable = true
+                    await checkDependencies()
+                    return
+                }
+            }
+            backendStartupError = backend.startupError ?? "Backend did not respond within 10 seconds."
         }
     }
 
@@ -125,6 +191,8 @@ final class AppState: ObservableObject {
     /// Call from applicationWillTerminate (or SwiftUI .onReceive of NSApplication.willTerminateNotification)
     @MainActor
     func shutdown() {
+        healthPollTimer?.invalidate()
+        healthPollTimer = nil
         backend.stop()
     }
 }

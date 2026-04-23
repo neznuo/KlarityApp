@@ -65,8 +65,8 @@ final class CalendarService: NSObject, ASWebAuthenticationPresentationContextPro
 
     func isConnected(_ provider: CalendarSource) -> Bool {
         switch provider {
-        case .google:    return KeychainService.load(key: KeychainService.googleAccessToken) != nil
-        case .microsoft: return KeychainService.load(key: KeychainService.msAccessToken) != nil
+        case .google:    return (try? KeychainService.load(key: KeychainService.googleAccessToken)) != nil
+        case .microsoft: return (try? KeychainService.load(key: KeychainService.msAccessToken)) != nil
         }
     }
 
@@ -101,14 +101,14 @@ final class CalendarService: NSObject, ASWebAuthenticationPresentationContextPro
     func disconnect(_ provider: CalendarSource) {
         switch provider {
         case .google:
-            KeychainService.delete(key: KeychainService.googleAccessToken)
-            KeychainService.delete(key: KeychainService.googleRefreshToken)
-            KeychainService.delete(key: KeychainService.googleTokenExpiry)
+            try? KeychainService.delete(key: KeychainService.googleAccessToken)
+            try? KeychainService.delete(key: KeychainService.googleRefreshToken)
+            try? KeychainService.delete(key: KeychainService.googleTokenExpiry)
             Task { _ = try? await APIClient.shared.updateSettings(["google_calendar_connected": false]) }
         case .microsoft:
-            KeychainService.delete(key: KeychainService.msAccessToken)
-            KeychainService.delete(key: KeychainService.msRefreshToken)
-            KeychainService.delete(key: KeychainService.msTokenExpiry)
+            try? KeychainService.delete(key: KeychainService.msAccessToken)
+            try? KeychainService.delete(key: KeychainService.msRefreshToken)
+            try? KeychainService.delete(key: KeychainService.msTokenExpiry)
             Task { _ = try? await APIClient.shared.updateSettings(["outlook_connected": false]) }
         }
         logger.info("Disconnected \(provider.rawValue)")
@@ -173,13 +173,13 @@ final class CalendarService: NSObject, ASWebAuthenticationPresentationContextPro
         }
 
         // Check if token is still valid (with 60s buffer)
-        if let expiryStr = KeychainService.load(key: expiryKey),
+        if let expiryStr = try KeychainService.load(key: expiryKey),
            let expiryTs = Double(expiryStr),
            Date().timeIntervalSince1970 < expiryTs - 60 {
             return
         }
 
-        guard let refreshToken = KeychainService.load(key: refreshKey) else {
+        guard let refreshToken = try KeychainService.load(key: refreshKey) else {
             throw CalendarError.noRefreshToken
         }
         params["refresh_token"] = refreshToken
@@ -192,12 +192,12 @@ final class CalendarService: NSObject, ASWebAuthenticationPresentationContextPro
         let (data, _) = try await urlSession.data(for: req)
         let response = try JSONDecoder().decode(TokenResponse.self, from: data)
 
-        KeychainService.save(key: accessKey, value: response.accessToken)
+        try KeychainService.save(key: accessKey, value: response.accessToken)
         if let newRefresh = response.refreshToken {
-            KeychainService.save(key: refreshKey, value: newRefresh)
+            try KeychainService.save(key: refreshKey, value: newRefresh)
         }
         let expiry = Date().addingTimeInterval(TimeInterval(response.expiresIn ?? 3600))
-        KeychainService.save(key: expiryKey, value: "\(expiry.timeIntervalSince1970)")
+        try KeychainService.save(key: expiryKey, value: "\(expiry.timeIntervalSince1970)")
     }
 
     // MARK: - ASWebAuthenticationPresentationContextProviding
@@ -273,20 +273,20 @@ final class CalendarService: NSObject, ASWebAuthenticationPresentationContextPro
 
         switch provider {
         case .google:
-            KeychainService.save(key: KeychainService.googleAccessToken, value: response.accessToken)
+            try KeychainService.save(key: KeychainService.googleAccessToken, value: response.accessToken)
             if let refresh = response.refreshToken {
-                KeychainService.save(key: KeychainService.googleRefreshToken, value: refresh)
+                try KeychainService.save(key: KeychainService.googleRefreshToken, value: refresh)
             }
             let expiry = Date().addingTimeInterval(TimeInterval(response.expiresIn ?? 3600))
-            KeychainService.save(key: KeychainService.googleTokenExpiry, value: "\(expiry.timeIntervalSince1970)")
+            try KeychainService.save(key: KeychainService.googleTokenExpiry, value: "\(expiry.timeIntervalSince1970)")
             _ = try? await APIClient.shared.updateSettings(["google_calendar_connected": true])
         case .microsoft:
-            KeychainService.save(key: KeychainService.msAccessToken, value: response.accessToken)
+            try KeychainService.save(key: KeychainService.msAccessToken, value: response.accessToken)
             if let refresh = response.refreshToken {
-                KeychainService.save(key: KeychainService.msRefreshToken, value: refresh)
+                try KeychainService.save(key: KeychainService.msRefreshToken, value: refresh)
             }
             let expiry = Date().addingTimeInterval(TimeInterval(response.expiresIn ?? 3600))
-            KeychainService.save(key: KeychainService.msTokenExpiry, value: "\(expiry.timeIntervalSince1970)")
+            try KeychainService.save(key: KeychainService.msTokenExpiry, value: "\(expiry.timeIntervalSince1970)")
             _ = try? await APIClient.shared.updateSettings(["outlook_connected": true])
         }
     }
@@ -299,7 +299,7 @@ final class CalendarService: NSObject, ASWebAuthenticationPresentationContextPro
 
         switch provider {
         case .google:
-            guard let accessToken = KeychainService.load(key: KeychainService.googleAccessToken) else {
+            guard let accessToken = try KeychainService.load(key: KeychainService.googleAccessToken) else {
                 throw CalendarError.notAuthenticated
             }
             var components = URLComponents(string: "https://www.googleapis.com/calendar/v3/calendars/primary/events")!
@@ -315,7 +315,7 @@ final class CalendarService: NSObject, ASWebAuthenticationPresentationContextPro
             let (data, resp) = try await urlSession.data(for: req)
             if (resp as? HTTPURLResponse)?.statusCode == 401 {
                 try await refreshTokenIfNeeded(for: .google)
-                let fresh = KeychainService.load(key: KeychainService.googleAccessToken) ?? ""
+                let fresh = try KeychainService.load(key: KeychainService.googleAccessToken) ?? ""
                 req.setValue("Bearer \(fresh)", forHTTPHeaderField: "Authorization")
                 let (data2, _) = try await urlSession.data(for: req)
                 return try parseGoogleEvents(data2)
@@ -323,7 +323,7 @@ final class CalendarService: NSObject, ASWebAuthenticationPresentationContextPro
             return try parseGoogleEvents(data)
 
         case .microsoft:
-            guard let accessToken = KeychainService.load(key: KeychainService.msAccessToken) else {
+            guard let accessToken = try KeychainService.load(key: KeychainService.msAccessToken) else {
                 throw CalendarError.notAuthenticated
             }
             var components = URLComponents(string: "https://graph.microsoft.com/v1.0/me/calendarView")!
@@ -338,7 +338,7 @@ final class CalendarService: NSObject, ASWebAuthenticationPresentationContextPro
             let (data, resp) = try await urlSession.data(for: req)
             if (resp as? HTTPURLResponse)?.statusCode == 401 {
                 try await refreshTokenIfNeeded(for: .microsoft)
-                let fresh = KeychainService.load(key: KeychainService.msAccessToken) ?? ""
+                let fresh = try KeychainService.load(key: KeychainService.msAccessToken) ?? ""
                 req.setValue("Bearer \(fresh)", forHTTPHeaderField: "Authorization")
                 let (data2, _) = try await urlSession.data(for: req)
                 return try parseMicrosoftEvents(data2)

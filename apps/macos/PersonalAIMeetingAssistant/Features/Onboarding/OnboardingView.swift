@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct OnboardingView: View {
@@ -21,11 +22,12 @@ struct OnboardingView: View {
             onSkip: steps[currentStep].canSkip ? { advance() } : nil
         ) {
             switch steps[currentStep] {
-            case .welcome:     welcomeStep
-            case .permissions: permissionsStep
-            case .apiKeys:     apiKeysStep
-            case .calendar:    calendarStep
-            case .done:        doneStep
+            case .welcome:      welcomeStep
+            case .backendSetup: backendSetupStep
+            case .permissions:  permissionsStep
+            case .apiKeys:      apiKeysStep
+            case .calendar:     calendarStep
+            case .done:         doneStep
             }
         }
         .task { await settingsVM.load() }
@@ -33,21 +35,23 @@ struct OnboardingView: View {
 
     private var canContinue: Bool {
         switch steps[currentStep] {
-        case .welcome:     return true
-        case .permissions: return permVM.hasMicAccess
-        case .apiKeys:     return true
-        case .calendar:   return true
-        case .done:        return true
+        case .welcome:      return true
+        case .backendSetup: return true
+        case .permissions:  return permVM.hasMicAccess
+        case .apiKeys:      return true
+        case .calendar:     return true
+        case .done:         return true
         }
     }
 
     private var continueLabel: String {
         switch steps[currentStep] {
-        case .welcome:     return "Get Started"
-        case .permissions: return "Continue"
-        case .apiKeys:     return "Continue"
-        case .calendar:    return "Continue"
-        case .done:        return "Start Using Klarity"
+        case .welcome:      return "Get Started"
+        case .backendSetup: return "Continue"
+        case .permissions:  return "Continue"
+        case .apiKeys:      return "Continue"
+        case .calendar:     return "Continue"
+        case .done:         return "Start Using Klarity"
         }
     }
 
@@ -56,6 +60,65 @@ struct OnboardingView: View {
             withAnimation { currentStep += 1 }
         } else {
             onboardingCompleted = true
+        }
+    }
+
+    // MARK: - Backend Setup
+
+    private var backendSetupStep: some View {
+        VStack(spacing: 20) {
+            Spacer()
+
+            ZStack {
+                Circle().fill(AppTheme.Colors.brandLight).frame(width: 72, height: 72)
+                Image(systemName: "server.rack")
+                    .font(.system(size: 32))
+                    .foregroundStyle(AppTheme.Colors.brandPrimary)
+            }
+
+            Text("Set Up Backend")
+                .font(AppTheme.Fonts.header)
+                .foregroundStyle(AppTheme.Colors.primaryText)
+
+            if appState.backendVenvHealthy {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(AppTheme.Colors.accentGreen)
+                    Text("Backend environment is ready.")
+                        .font(AppTheme.Fonts.body)
+                        .foregroundStyle(AppTheme.Colors.secondaryText)
+                }
+            } else {
+                Text("Klarity needs a local Python environment to transcribe audio and generate meeting notes. This is created automatically from the bundled requirements.")
+                    .font(AppTheme.Fonts.body)
+                    .foregroundStyle(AppTheme.Colors.secondaryText)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 420)
+
+                Button {
+                    NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "gear")
+                        Text("Open Settings")
+                    }
+                    .font(AppTheme.Fonts.body)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 10)
+                    .background(AppTheme.Colors.brandPrimary)
+                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.Metrics.cornerRadius))
+                }
+                .buttonStyle(.plain)
+
+                Text("Go to Settings → Backend Environment and click Create Backend. Then return here to continue.")
+                    .font(AppTheme.Fonts.caption)
+                    .foregroundStyle(AppTheme.Colors.tertiaryText)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 380)
+            }
+
+            Spacer()
         }
     }
 
@@ -297,6 +360,7 @@ struct OnboardingView: View {
 
 enum OnboardingStep: Int, CaseIterable {
     case welcome
+    case backendSetup
     case permissions
     case apiKeys
     case calendar
@@ -305,7 +369,7 @@ enum OnboardingStep: Int, CaseIterable {
     var canSkip: Bool {
         switch self {
         case .welcome, .permissions, .done: return false
-        case .apiKeys, .calendar:           return true
+        case .backendSetup, .apiKeys, .calendar: return true
         }
     }
 }
