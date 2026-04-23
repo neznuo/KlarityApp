@@ -113,6 +113,12 @@ struct ContentView: View {
                     .navigationTitle("Settings")
             }
         }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if !appState.backendReady {
+                BackendBannerView(onSettings: { selection = .settings })
+                    .environmentObject(appState)
+            }
+        }
         // Register this window with WindowManager (installs hide-on-close delegate)
         .background(WindowCapture())
         // ── Recording pill floats at the top of the window ───────────────────
@@ -145,8 +151,8 @@ struct ContentView: View {
                     .clipShape(RoundedRectangle(cornerRadius: AppTheme.Metrics.cornerRadius))
                 }
                 .buttonStyle(.borderless)
-                .disabled(isActivelyRecording)
-                .help(isActivelyRecording ? "A recording is already in progress" : "Start a new meeting recording")
+                .disabled(isActivelyRecording || !appState.backendReady)
+                .help(isActivelyRecording ? "A recording is already in progress" : (!appState.backendReady ? "Backend must be ready before recording" : "Start a new meeting recording"))
             }
         }
         .toolbarBackground(.hidden, for: .windowToolbar)
@@ -186,6 +192,44 @@ struct ContentView: View {
             actions: { Button("OK") { appState.backendStartupError = nil } },
             message: { Text(appState.backendStartupError ?? "") }
         )
+    }
+}
+
+// MARK: - Backend Banner
+
+/// Prominent banner shown at the top of every page when the backend is not ready.
+struct BackendBannerView: View {
+    @EnvironmentObject var appState: AppState
+    let onSettings: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.white)
+            Text(appState.backendVenvHealthy
+                 ? "Backend is starting up…"
+                 : "Backend environment is missing. Recording and transcription won't work.")
+                .font(AppTheme.Fonts.body)
+                .foregroundStyle(.white)
+            Spacer()
+            if !appState.backendVenvHealthy {
+                Button {
+                    onSettings()
+                } label: {
+                    Text("Go to Settings")
+                        .font(AppTheme.Fonts.body)
+                        .foregroundStyle(AppTheme.Colors.brandPrimary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(Color.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(AppTheme.Colors.accentOrange)
     }
 }
 
@@ -420,12 +464,12 @@ struct AppSidebar: View {
             .background(AppTheme.Colors.sidebarBackground)
         }
         .safeAreaInset(edge: .bottom) {
-            if !appState.backendReachable {
+            if !appState.backendReady {
                 HStack(spacing: 7) {
                     Image(systemName: "circle.fill")
                         .font(.system(size: 7))
                         .foregroundStyle(.orange)
-                    Text("Backend Offline")
+                    Text(appState.backendVenvHealthy ? "Backend Offline" : "Backend Missing")
                         .font(AppTheme.Fonts.caption)
                         .foregroundStyle(AppTheme.Colors.secondaryText)
                     Spacer()

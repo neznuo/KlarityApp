@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.db.database import get_db
 from app.models.meeting import Meeting
 from app.schemas import MeetingCreate, MeetingListOut, MeetingOut, MeetingPatch
@@ -74,6 +76,10 @@ def update_meeting(meeting_id: str, body: MeetingPatch, db: Session = Depends(ge
     if body.title is not None:
         meeting.title = body.title
     if body.audio_file_path is not None:
+        resolved = Path(body.audio_file_path).expanduser().resolve()
+        allowed_base = settings.meetings_path.resolve()
+        if not str(resolved).startswith(str(allowed_base)):
+            raise HTTPException(status_code=400, detail="audio_file_path must resolve inside the configured meetings directory")
         meeting.audio_file_path = body.audio_file_path
     if body.ended_at is not None:
         meeting.ended_at = body.ended_at

@@ -684,10 +684,10 @@ final class SettingsViewModel: ObservableObject {
             let dict = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
             settings = try await APIClient.shared.updateSettings(dict)
             // Also persist sensitive keys to Keychain
-            KeychainService.save(key: KeychainService.elevenLabsKey, value: settings.elevenLabsApiKey)
-            KeychainService.save(key: KeychainService.openAIKey, value: settings.openAiApiKey)
-            KeychainService.save(key: KeychainService.anthropicKey, value: settings.anthropicApiKey)
-            KeychainService.save(key: KeychainService.geminiKey, value: settings.geminiApiKey)
+            try KeychainService.save(key: KeychainService.elevenLabsKey, value: settings.elevenLabsApiKey)
+            try KeychainService.save(key: KeychainService.openAIKey, value: settings.openAiApiKey)
+            try KeychainService.save(key: KeychainService.anthropicKey, value: settings.anthropicApiKey)
+            try KeychainService.save(key: KeychainService.geminiKey, value: settings.geminiApiKey)
         } catch {
             errorMessage = error.localizedDescription
         }

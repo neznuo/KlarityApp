@@ -5,11 +5,11 @@ from typing import Optional
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class PersonCreate(BaseModel):
-    display_name: str
+    display_name: str = Field(..., max_length=100)
     notes: Optional[str] = None
 
 

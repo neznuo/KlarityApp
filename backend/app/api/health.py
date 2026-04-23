@@ -9,6 +9,19 @@ from app.schemas import SettingsOut, SettingsPatch
 
 router = APIRouter(tags=["health"])
 
+API_KEY_FIELDS = {
+    "elevenlabs_api_key",
+    "openai_api_key",
+    "anthropic_api_key",
+    "gemini_api_key",
+}
+
+
+def _mask_key(key: str | None) -> str | None:
+    if not key or len(key) < 8:
+        return key
+    return key[:4] + "..." + key[-4:]
+
 
 @router.get("/health")
 def health_check():
@@ -174,13 +187,27 @@ def _check_ollama(endpoint: str, model: str) -> tuple[str, str]:
 
 
 @router.get("/settings", response_model=SettingsOut)
-def get_settings():
+def get_settings(db: Session = Depends(get_db)):
     """Return current effective settings."""
+    from app.models.setting import Setting, decrypt_value
+
+    def _db_val(key: str, default: str) -> str:
+        row = db.get(Setting, key)
+        if row:
+            decrypted = decrypt_value(row.value)
+            return decrypted if decrypted is not None else default
+        return default
+
+    elevenlabs = _db_val("elevenlabs_api_key", settings.elevenlabs_api_key)
+    openai = _db_val("openai_api_key", settings.openai_api_key)
+    anthropic = _db_val("anthropic_api_key", settings.anthropic_api_key)
+    gemini = _db_val("gemini_api_key", settings.gemini_api_key)
+
     return SettingsOut(
-        elevenlabs_api_key=settings.elevenlabs_api_key,
-        openai_api_key=settings.openai_api_key,
-        anthropic_api_key=settings.anthropic_api_key,
-        gemini_api_key=settings.gemini_api_key,
+        elevenlabs_api_key=_mask_key(elevenlabs),
+        openai_api_key=_mask_key(openai),
+        anthropic_api_key=_mask_key(anthropic),
+        gemini_api_key=_mask_key(gemini),
         ollama_endpoint=settings.ollama_endpoint,
         default_llm_provider=settings.default_llm_provider,
         default_llm_model=settings.default_llm_model,
@@ -198,30 +225,35 @@ def get_settings():
 def patch_settings(body: SettingsPatch, db: Session = Depends(get_db)):
     """
     Update runtime settings.
-    NOTE: In a real implementation this would write values to the DB settings
-    table or reload environment — this stub just echoes what was sent merged
-    with current values.
+    API keys are encrypted at rest. Masked values (containing '...') are skipped.
     """
-    from app.models.setting import Setting
+    from app.models.setting import Setting, encrypt_value
     from datetime import datetime, timezone
 
     updates = body.model_dump(exclude_none=True)
     for key, value in updates.items():
+        if key in API_KEY_FIELDS and value is not None and "..." in str(value):
+            continue
         row = db.get(Setting, key)
+        str_value = str(value)
+        if key in API_KEY_FIELDS:
+            str_value = encrypt_value(str_value)
         if row:
-            row.value = str(value)
+            row.value = str_value
             row.updated_at = datetime.now(timezone.utc)
         else:
-            row = Setting(key=key, value=str(value))
+            row = Setting(key=key, value=str_value)
             db.add(row)
     db.commit()
 
-    # Reload the in-memory settings from DB values
+    # Reload the in-memory settings from request values (skip masked keys)
     for key, value in updates.items():
+        if key in API_KEY_FIELDS and value is not None and "..." in str(value):
+            continue
         if hasattr(settings, key):
             try:
                 setattr(settings, key, type(getattr(settings, key))(value))
             except Exception:
                 pass
 
-    return get_settings()
+    return get_settings(db)

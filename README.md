@@ -151,7 +151,7 @@ Open the project and press `⌘R`.
 **Option B: Command line**
 
 ```bash
-./scripts/build.sh
+./scripts/build.sh 2>&1 | tail -30
 ```
 
 On success, the build script prints the path to the `.app` bundle. Run it:

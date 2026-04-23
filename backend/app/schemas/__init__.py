@@ -19,7 +19,7 @@ from app.schemas.speaker import (
 )
 from app.schemas.transcript import TranscriptSegmentOut
 from app.schemas.summary import SummaryOut, GenerateSummaryRequest
-from app.schemas.task import TaskOut
+from app.schemas.task import TaskOut, TaskUpdate
 from app.schemas.settings import SettingsOut, SettingsPatch
 
 __all__ = [
@@ -28,6 +28,6 @@ __all__ = [
     "SpeakerClusterOut", "AssignSpeakerRequest", "ConfirmSuggestionRequest", "MergeSpeakersRequest",
     "TranscriptSegmentOut",
     "SummaryOut", "GenerateSummaryRequest",
-    "TaskOut",
+    "TaskOut", "TaskUpdate",
     "SettingsOut", "SettingsPatch",
 ]
