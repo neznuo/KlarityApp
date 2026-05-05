@@ -122,7 +122,7 @@ private struct MeetingTaskSection: View {
 
     @State private var isExpanded = true
 
-    var completedCount: Int { tasks.filter { $0.status.lowercased() == "completed" }.count }
+    var completedCount: Int { tasks.filter { $0.status.lowercased() == "done" }.count }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -211,7 +211,7 @@ private struct TaskRowView: View {
     @State private var isEditingOwner = false
     @State private var ownerDraft: String = ""
 
-    private var isDone: Bool { task.status.lowercased() == "completed" }
+    private var isDone: Bool { task.status.lowercased() == "done" }
     private var displayOwner: String { task.rawOwnerText ?? "" }
 
     var body: some View {

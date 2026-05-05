@@ -336,7 +336,7 @@ struct MeetingDetailView: View {
                 if !vm.tasks.isEmpty {
                     content += "\n\n## Action Items\n"
                     for task in vm.tasks {
-                        let statusMarker = task.status.lowercased() == "completed" ? "[x]" : "[ ]"
+                        let statusMarker = task.status.lowercased() == "done" ? "[x]" : "[ ]"
                         let assigneePart = (task.rawOwnerText?.isEmpty == false) ? " (Assignee: \(task.rawOwnerText!))" : ""
                         content += "- \(statusMarker) \(task.description)\(assigneePart)\n"
                     }
@@ -513,7 +513,7 @@ private struct SummaryTaskRowView: View {
     let onToggle: (MeetingTask) -> Void
     let onUpdateOwner: (MeetingTask, String?) -> Void
 
-    private var isDone: Bool { task.status.lowercased() == "completed" }
+    private var isDone: Bool { task.status.lowercased() == "done" }
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {

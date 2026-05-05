@@ -416,7 +416,7 @@ final class MeetingDetailViewModel: ObservableObject {
     }
 
     func toggleTaskStatus(_ task: MeetingTask) async {
-        let newStatus = task.status.lowercased() == "completed" ? "open" : "completed"
+        let newStatus = task.status.lowercased() == "done" ? "open" : "done"
         if let idx = tasks.firstIndex(where: { $0.id == task.id }) {
             tasks[idx].status = newStatus
         }
@@ -567,8 +567,8 @@ final class ActionItemsViewModel: ObservableObject {
         // 2. Status filter
         switch statusFilter {
         case .all:       return assigneeFiltered
-        case .open:      return assigneeFiltered.filter { $0.status.lowercased() != "completed" }
-        case .completed: return assigneeFiltered.filter { $0.status.lowercased() == "completed" }
+        case .open:      return assigneeFiltered.filter { $0.status.lowercased() != "done" }
+        case .completed: return assigneeFiltered.filter { $0.status.lowercased() == "done" }
         }
     }
 
@@ -600,7 +600,7 @@ final class ActionItemsViewModel: ObservableObject {
     }
 
     func toggleTaskStatus(_ task: MeetingTask) async {
-        let newStatus = task.status.lowercased() == "completed" ? "open" : "completed"
+        let newStatus = task.status.lowercased() == "done" ? "open" : "done"
         if let idx = tasks.firstIndex(where: { $0.id == task.id }) {
             tasks[idx].status = newStatus
         }
