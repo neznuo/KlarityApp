@@ -91,6 +91,15 @@ final class AudioRecorder: NSObject, ObservableObject {
     private var outputDeviceChangeListenerInstalled = false
     private var inputDeviceChangeListenerInstalled = false
 
+    // MARK: Engine notification observer
+
+    /// Notification name for AVAudioEngine configuration changes.
+    /// This is declared as an NSString* const in the C header, not as a Swift type member,
+    /// so we must use the raw string name.
+    private static let engineConfigChangeNotification = Notification.Name("AVAudioEngineConfigurationChangeNotification")
+
+    private var engineConfigObserver: NSObjectProtocol?
+
     private let logger = AppLogger(category: "AudioRecorder")
     private let kAggregateUID = "com.klarity.meetingrecorder.aggregate.v2"
     private let kAggregateName = "KlarityMeetingRecorder"
@@ -507,7 +516,10 @@ final class AudioRecorder: NSObject, ObservableObject {
             guard !paused, buffer.frameLength > 0 else { return }
 
             let converter = self.micConverterLock.withLock { $0 }
-            guard let converter else { return }
+            guard let converter else {
+                self.logger.error("Mic tap callback: converter is nil — buffers will be dropped until converter is set")
+                return
+            }
 
             let ratio  = outputFormat.sampleRate / buffer.format.sampleRate
             let outCap = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 4
@@ -534,10 +546,20 @@ final class AudioRecorder: NSObject, ObservableObject {
 
         // engine.start() calls prepare() internally — run on a background thread so it
         // doesn't block the MainActor while the HAL initialises.
-        let started: Bool = await withCheckedContinuation { cont in
-            DispatchQueue.global(qos: .userInitiated).async {
-                do { try engine.start(); cont.resume(returning: true) }
-                catch { cont.resume(returning: false) }
+        // Retry up to 3 times — AVAudioEngine.start() can fail transiently due to HAL
+        // reconfiguration after the aggregate device was just created.
+        var started = false
+        for attempt in 1...3 {
+            started = await withCheckedContinuation { cont in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    do { try engine.start(); cont.resume(returning: true) }
+                    catch { cont.resume(returning: false) }
+                }
+            }
+            if started { break }
+            if attempt < 3 {
+                logger.warn("AVAudioEngine.start() failed (attempt \(attempt)/3), retrying...")
+                try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
             }
         }
 
@@ -550,6 +572,13 @@ final class AudioRecorder: NSObject, ObservableObject {
 
         audioEngine = engine
         logger.info("Mic capture started")
+
+        // Register for engine configuration changes (engine may stop silently)
+        registerEngineConfigObserver()
+
+        // Log the actual input format after engine start for diagnostics
+        let actualFormat = inputNode.outputFormat(forBus: 0)
+        logger.info("Mic input format after start: \(actualFormat.commonFormat.rawValue), \(actualFormat.sampleRate)Hz, \(actualFormat.channelCount)ch, interleaved=\(actualFormat.isInterleaved)")
     }
 
     // MARK: - IOProc (Core Audio real-time thread — system audio only)
@@ -644,7 +673,8 @@ final class AudioRecorder: NSObject, ObservableObject {
                 if !hasMic {
                     // Mic failure is expected if permission was denied, so only warn if we attempted mic
                     if self.audioEngine != nil {
-                        self.logger.warn("Health check: No mic audio received after 3s — mic may be unavailable or permission denied")
+                        self.logger.warn("Health check: No mic audio received after 3s — attempting mic restart")
+                        await self.restartMicCapture()
                     }
                 }
             }
@@ -657,6 +687,17 @@ final class AudioRecorder: NSObject, ObservableObject {
                 let hasSys = self.hasSysAudioLock.withLock { $0 }
                 if !hasSys {
                     self.logger.warn("Stall detection: No system audio data received in 10s — audio device may have changed or tap may have stopped")
+                }
+                // Check mic engine health
+                let hasMic = self.hasMicAudioLock.withLock { $0 }
+                let engineRunning = self.audioEngine?.isRunning ?? false
+                if self.audioEngine != nil && !engineRunning {
+                    self.logger.warn("Stall detection: AVAudioEngine stopped during recording — attempting mic restart")
+                    await self.restartMicCapture()
+                } else if self.audioEngine != nil && engineRunning && !hasMic {
+                    // Engine is running but no mic audio flowing — tap may need reinstall
+                    self.logger.warn("Stall detection: AVAudioEngine running but no mic audio received — attempting mic restart")
+                    await self.restartMicCapture()
                 }
             }
         }
@@ -720,6 +761,90 @@ final class AudioRecorder: NSObject, ObservableObject {
                 AudioObjectID(kAudioObjectSystemObject), &inputAddr,
                 klarityAudioDeviceChangedCallback, selfPtr)
             inputDeviceChangeListenerInstalled = false
+        }
+    }
+
+    // Guard against recursive restart — if restartMicCapture is already in progress, skip
+    private var isRestartingMic = false
+
+    // MARK: - Engine configuration observer
+
+    private func registerEngineConfigObserver() {
+        removeEngineConfigObserver()
+        guard let engine = audioEngine else { return }
+        engineConfigObserver = NotificationCenter.default.addObserver(
+            forName: Self.engineConfigChangeNotification,
+            object: engine,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self else { return }
+            Task { @MainActor in
+                guard self.state == .recording || self.state == .paused else { return }
+                let engine = notification.object as? AVAudioEngine
+                let isRunning = engine?.isRunning ?? self.audioEngine?.isRunning ?? false
+                self.logger.warn("AVAudioEngine configuration changed. Engine running: \(isRunning)")
+                if !isRunning {
+                    self.logger.warn("AVAudioEngine stopped — attempting mic restart")
+                    await self.restartMicCapture()
+                } else {
+                    // Engine is still running but config changed — check if tap is still active
+                    self.logger.info("AVAudioEngine reconfigured while running — monitoring mic audio flow")
+                }
+            }
+        }
+    }
+
+    private func removeEngineConfigObserver() {
+        if let observer = engineConfigObserver {
+            NotificationCenter.default.removeObserver(observer)
+            engineConfigObserver = nil
+        }
+    }
+
+    // MARK: - Mic capture restart
+
+    /// Restarts the mic capture engine without stopping system audio recording.
+    /// Called when the AVAudioEngine stops or mic audio stops flowing during recording.
+    private func restartMicCapture() async {
+        guard state == .recording || state == .paused else { return }
+        guard !isRestartingMic else {
+            logger.info("Mic restart already in progress — skipping")
+            return
+        }
+        isRestartingMic = true
+        defer { isRestartingMic = false }
+
+        logger.info("Restarting mic capture...")
+
+        // Block callbacks during reconfiguration
+        isReconfiguringLock.withLock { $0 = true }
+        defer { isReconfiguringLock.withLock { $0 = false } }
+
+        // Remove observer before stopping engine to avoid recursive notification
+        removeEngineConfigObserver()
+
+        // Drain pending mic writes
+        await withCheckedContinuation { continuation in
+            micWriterQueue.async { continuation.resume() }
+        }
+
+        // Stop current mic engine
+        stopMicCapture()
+
+        // Reset mic audio flag so health check can detect if restart worked
+        hasMicAudioLock.withLock { $0 = false }
+        DispatchQueue.main.async { self.hasMicAudioSource = false }
+
+        let pcm16 = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16_000, channels: 1, interleaved: true)!
+        await setupMicCapture(outputURL: micTempURL, outputFormat: pcm16)
+
+        // Re-register observer for the new engine
+        registerEngineConfigObserver()
+
+        if audioEngine != nil {
+            logger.info("Mic capture restarted successfully")
+        } else {
+            logger.error("Mic capture restart failed — continuing with system audio only")
         }
     }
 
@@ -842,6 +967,7 @@ final class AudioRecorder: NSObject, ObservableObject {
     }
 
     private func stopMicCapture() {
+        removeEngineConfigObserver()
         audioEngine?.inputNode.removeTap(onBus: 0)
         audioEngine?.stop()
         audioEngine  = nil
