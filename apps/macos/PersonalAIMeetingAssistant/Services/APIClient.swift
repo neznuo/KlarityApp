@@ -123,6 +123,10 @@ final class APIClient {
         try await delete("/meetings/\(id)")
     }
 
+    func deleteAudio(meetingId: String) async throws {
+        try await delete("/meetings/\(meetingId)/audio")
+    }
+
     func triggerProcessing(meetingId: String) async throws {
         var req = URLRequest(url: try url(for: "/meetings/\(meetingId)/process"))
         req.httpMethod = "POST"

@@ -5,11 +5,12 @@ import SwiftUI
 struct ChatView: View {
     @StateObject private var vm = ChatViewModel()
     @FocusState private var inputFocused: Bool
+    @State private var showingModelPicker = false
 
     var body: some View {
         VStack(spacing: 0) {
-            // ── Provider / Model picker bar ───────────────────────────────────
-            providerBar
+            // ── Header bar ────────────────────────────────────────────────────
+            headerBar
 
             Divider()
 
@@ -43,57 +44,131 @@ struct ChatView: View {
 
             Divider()
 
+            // ── Conversation context indicator ────────────────────────────────
+            if !vm.messages.isEmpty {
+                HStack(spacing: 4) {
+                    Image(systemName: "bubble.left.and.bubble.right")
+                        .font(.system(size: 10))
+                        .foregroundStyle(AppTheme.Colors.tertiaryText)
+                    Text("\(vm.messages.filter { $0.role == .user }.count) messages in this chat")
+                        .font(AppTheme.Fonts.caption)
+                        .foregroundStyle(AppTheme.Colors.tertiaryText)
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 4)
+            }
+
             // ── Input bar ─────────────────────────────────────────────────────
             inputBar
         }
         .background(AppTheme.Colors.background)
+        .onChange(of: vm.selectedModel) { _, _ in vm.saveModelSelection() }
     }
 
-    // MARK: - Provider Bar
+    // MARK: - Header Bar
 
-    private var providerBar: some View {
-        HStack(spacing: 12) {
+    private var headerBar: some View {
+        HStack(spacing: 10) {
             Image(systemName: "sparkles")
                 .foregroundStyle(AppTheme.Colors.brandPrimary)
                 .font(.system(size: 13, weight: .semibold))
-
             Text("AI Assistant")
                 .font(AppTheme.Fonts.listTitle)
                 .foregroundStyle(AppTheme.Colors.primaryText)
 
             Spacer()
 
-            // Provider picker
-            Picker("", selection: $vm.selectedProvider) {
-                ForEach(vm.providers, id: \.id) { p in
-                    Text(p.label).tag(p.id)
-                }
-            }
-            .pickerStyle(.menu)
-            .frame(width: 110)
-            .onChange(of: vm.selectedProvider) { _, _ in vm.onProviderChanged() }
+            // Model chip — tap to open popover
+            modelChip
 
-            // Model text field
-            TextField("Model", text: $vm.selectedModel)
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 150)
-                .font(AppTheme.Fonts.caption)
-                .help("Leave blank to use the provider's default model")
-
-            // Clear button
+            // New Chat button
             Button {
                 vm.clearConversation()
             } label: {
-                Image(systemName: "trash")
-                    .foregroundStyle(AppTheme.Colors.secondaryText)
+                HStack(spacing: 4) {
+                    Image(systemName: "plus.circle")
+                        .font(.system(size: 11))
+                    Text("New Chat")
+                        .font(AppTheme.Fonts.caption)
+                }
+                .foregroundStyle(vm.messages.isEmpty ? AppTheme.Colors.tertiaryText : AppTheme.Colors.secondaryText)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(AppTheme.Colors.inputBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
             }
-            .buttonStyle(.borderless)
-            .help("Clear conversation")
+            .buttonStyle(.plain)
             .disabled(vm.messages.isEmpty)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .background(AppTheme.Colors.cardSurface)
+    }
+
+    private var modelChip: some View {
+        Button {
+            showingModelPicker = true
+        } label: {
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(providerColor)
+                    .frame(width: 8, height: 8)
+                Text(providerLabel)
+                    .font(AppTheme.Fonts.caption)
+                    .foregroundStyle(AppTheme.Colors.primaryText)
+                Text("·")
+                    .font(AppTheme.Fonts.caption)
+                    .foregroundStyle(AppTheme.Colors.tertiaryText)
+                Text(displayModel)
+                    .font(AppTheme.Fonts.caption)
+                    .foregroundStyle(AppTheme.Colors.tertiaryText)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(AppTheme.Colors.inputBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(AppTheme.Colors.subtleBorder, lineWidth: 0.5)
+            )
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $showingModelPicker) {
+            ModelPickerPopover(vm: vm)
+        }
+    }
+
+    private var providerColor: Color {
+        switch vm.selectedProvider {
+        case "openai":    return Color(red: 0.07, green: 0.58, blue: 0.52)   // teal-green
+        case "anthropic": return Color(red: 0.38, green: 0.31, blue: 0.98)   // brand purple
+        case "gemini":    return Color(red: 0.22, green: 0.49, blue: 0.96)   // blue
+        case "ollama":    return Color(red: 0.55, green: 0.55, blue: 0.58)   // grey
+        default:          return AppTheme.Colors.secondaryText
+        }
+    }
+
+    private var providerLabel: String {
+        vm.providers.first(where: { $0.id == vm.selectedProvider })?.label ?? vm.selectedProvider
+    }
+
+    private var displayModel: String {
+        let model = vm.selectedModel
+        if model.isEmpty { return "default" }
+        // Shorten common model names for display
+        let shortNames: [String: String] = [
+            "gpt-4o-mini": "GPT-4o mini",
+            "gpt-4o": "GPT-4o",
+            "gpt-4-turbo": "GPT-4 Turbo",
+            "claude-3-5-haiku-latest": "Haiku 3.5",
+            "claude-3-5-sonnet-20241022": "Sonnet 3.5",
+            "claude-3-opus-20240229": "Opus 3",
+            "gemini-2.5-flash-lite": "Gemini Flash Lite",
+            "gemini-2.5-flash": "Gemini Flash",
+            "gemini-2.5-pro": "Gemini Pro",
+        ]
+        return shortNames[model] ?? model
     }
 
     // MARK: - Empty State
@@ -117,7 +192,7 @@ struct ChatView: View {
                     .foregroundStyle(AppTheme.Colors.primaryText)
                     .multilineTextAlignment(.center)
 
-                Text("Try asking about tasks, decisions, or what was discussed in past meetings.")
+                Text("Try asking about tasks, decisions, or what was discussed in past meetings. Your conversation is remembered until you start a new chat.")
                     .font(AppTheme.Fonts.body)
                     .foregroundStyle(AppTheme.Colors.secondaryText)
                     .multilineTextAlignment(.center)
@@ -317,6 +392,64 @@ private struct TypingIndicator: View {
                 phase = (phase + 1) % 3
             }
         }
+    }
+}
+
+// MARK: - Model Picker Popover
+
+struct ModelPickerPopover: View {
+    @ObservedObject var vm: ChatViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("AI Model")
+                .font(AppTheme.Fonts.title)
+                .foregroundStyle(AppTheme.Colors.primaryText)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Provider")
+                    .font(AppTheme.Fonts.caption)
+                    .foregroundStyle(AppTheme.Colors.secondaryText)
+                    .textCase(.uppercase)
+                Picker("Provider", selection: $vm.selectedProvider) {
+                    ForEach(vm.providers, id: \.id) { p in
+                        Text(p.label).tag(p.id)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: vm.selectedProvider) { _, _ in vm.onProviderChanged() }
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Model")
+                    .font(AppTheme.Fonts.caption)
+                    .foregroundStyle(AppTheme.Colors.secondaryText)
+                    .textCase(.uppercase)
+
+                TextField("Model name (e.g. gpt-4o-mini)", text: $vm.selectedModel)
+                    .textFieldStyle(.roundedBorder)
+                    .font(AppTheme.Fonts.caption)
+
+                let provider = vm.providers.first(where: { $0.id == vm.selectedProvider })
+                Text("Default: \(provider?.defaultModel ?? "")")
+                    .font(AppTheme.Fonts.caption)
+                    .foregroundStyle(AppTheme.Colors.tertiaryText)
+            }
+
+            Divider().opacity(0.4)
+
+            HStack(spacing: 6) {
+                Image(systemName: "bubble.left.and.bubble.right")
+                    .font(.system(size: 11))
+                    .foregroundStyle(AppTheme.Colors.brandPrimary)
+                Text("The AI remembers your conversation until you start a new chat.")
+                    .font(AppTheme.Fonts.caption)
+                    .foregroundStyle(AppTheme.Colors.tertiaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(16)
+        .frame(width: 280)
     }
 }
 

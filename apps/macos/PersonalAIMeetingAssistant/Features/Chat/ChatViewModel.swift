@@ -43,10 +43,23 @@ final class ChatViewModel: ObservableObject {
         ("ollama",    "Ollama",    "llama3.1"),
     ]
 
+    // UserDefaults keys for persisting provider/model selection
+    private static let providerKey = "klarityChatProvider"
+    private static let modelKey = "klarityChatModel"
+
     init(baseURL: String = "http://127.0.0.1:8765") {
         self.baseURL = baseURL
-        // Set default model for default provider
-        selectedModel = providers.first?.defaultModel ?? ""
+        // Restore saved provider/model, or fall back to defaults
+        let savedProvider = UserDefaults.standard.string(forKey: Self.providerKey)
+        let savedModel = UserDefaults.standard.string(forKey: Self.modelKey)
+        if let p = savedProvider, providers.contains(where: { $0.id == p }) {
+            selectedProvider = p
+        }
+        if let m = savedModel, !m.isEmpty {
+            selectedModel = m
+        } else {
+            selectedModel = providers.first(where: { $0.id == selectedProvider })?.defaultModel ?? ""
+        }
     }
 
     // Called when the user taps Send
@@ -62,7 +75,7 @@ final class ChatViewModel: ObservableObject {
         isLoading = true
 
         // Create a placeholder assistant bubble that will stream tokens into
-        var assistantMsg = ChatMessage(role: .assistant, content: "", isStreaming: true)
+        let assistantMsg = ChatMessage(role: .assistant, content: "", isStreaming: true)
         messages.append(assistantMsg)
         let assistantIdx = messages.count - 1
 
@@ -107,6 +120,12 @@ final class ChatViewModel: ObservableObject {
     // Update default model when user switches provider
     func onProviderChanged() {
         selectedModel = providers.first(where: { $0.id == selectedProvider })?.defaultModel ?? ""
+        UserDefaults.standard.set(selectedProvider, forKey: Self.providerKey)
+        UserDefaults.standard.set(selectedModel, forKey: Self.modelKey)
+    }
+
+    func saveModelSelection() {
+        UserDefaults.standard.set(selectedModel, forKey: Self.modelKey)
     }
 
     // MARK: - Streaming Request
