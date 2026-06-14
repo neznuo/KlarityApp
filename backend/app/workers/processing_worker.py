@@ -34,6 +34,7 @@ from app.services.audio.preprocessor import AudioPreprocessor
 from app.services.embeddings.speaker_embedding import SpeakerEmbeddingService
 from app.services.storage.file_layout import (
     normalized_audio_path,
+    resolve_audio_for_embedding,
     summary_json_path,
     summary_md_path,
     tasks_json_path,
@@ -276,11 +277,16 @@ def run_speaker_matching_step(meeting_id: str, db: Optional[Session] = None) -> 
 
         try:
             meeting = db.get(Meeting, meeting_id)
-            if not meeting or not meeting.normalized_audio_path:
-                _finish_job(job, db, error="No normalized audio")
+            if not meeting:
+                _finish_job(job, db, error="Meeting not found")
                 return
 
-            norm_path = Path(meeting.normalized_audio_path)
+            ref_audio = resolve_audio_for_embedding(meeting_id, meeting.normalized_audio_path)
+            if ref_audio is None:
+                _finish_job(job, db, error="No audio file available for embedding")
+                return
+
+            norm_path = ref_audio
             embedding_svc = SpeakerEmbeddingService()
 
             clusters = (
@@ -310,7 +316,6 @@ def run_speaker_matching_step(meeting_id: str, db: Optional[Session] = None) -> 
                     cluster_segs = segs_by_cluster.get(cluster.id, [])
                     audio_path = _extract_cluster_audio(norm_path, cluster_segs, cluster.id)
                     if audio_path is None:
-                        # Fallback: embed the full audio (better than nothing)
                         audio_path = norm_path
                     embedding = embedding_svc.compute_embedding(audio_path)
                     emb_path = voice_embedding_path(f"cluster_{cluster.id}")
@@ -500,6 +505,28 @@ def run_summarization_step(
 
             _finish_job(job, db)
             _update_meeting_status(meeting_id, "complete", db)
+
+            # Remove intermediate files that are no longer needed after completion.
+            # normalized.wav is functionally identical to audio.wav (source is already
+            # 16kHz mono so FFmpeg is a no-op). transcript.raw.json is the raw API
+            # response — all useful data is in transcript.json.
+            try:
+                cleanup_db = _get_db()
+                try:
+                    m = cleanup_db.get(Meeting, meeting_id)
+                    if m and m.normalized_audio_path:
+                        norm_file = Path(m.normalized_audio_path)
+                        if norm_file.exists():
+                            norm_file.unlink()
+                        m.normalized_audio_path = None
+                        cleanup_db.commit()
+                finally:
+                    cleanup_db.close()
+                raw_json = transcript_raw_json_path(meeting_id)
+                if raw_json.exists():
+                    raw_json.unlink()
+            except Exception:
+                pass  # cleanup failures are non-fatal
 
         except Exception as exc:
             _finish_job(job, db, error=str(exc))

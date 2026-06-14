@@ -41,6 +41,14 @@ if [ ! -f "${BACKEND_SRC}/venv/bin/python" ]; then
     exit 1
 fi
 
+# Sanity-check that packages are actually installed (a bare venv with only pip is ~13MB).
+# fastapi is a lightweight proxy for "requirements were installed".
+if ! "${BACKEND_SRC}/venv/bin/python" -c "import fastapi" 2>/dev/null; then
+    echo "error: venv exists but requirements are not installed."
+    echo "       Run: cd backend && venv/bin/pip install -r requirements.txt"
+    exit 1
+fi
+
 # Create destination
 mkdir -p "${DEST}"
 
