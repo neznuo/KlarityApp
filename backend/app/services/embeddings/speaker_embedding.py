@@ -84,6 +84,12 @@ class SpeakerEmbeddingService:
                 best_id = person_id
         return best_id, best_sim
 
+    def average_embeddings(self, embeddings: list[np.ndarray]) -> np.ndarray:
+        """Return the L2-normalised mean of a list of embeddings."""
+        mean = np.mean(np.stack(embeddings), axis=0)
+        norm = np.linalg.norm(mean)
+        return mean / norm if norm > 0 else mean
+
     def check_duplicates(
         self,
         cluster_embeddings: dict[str, np.ndarray],

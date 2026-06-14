@@ -122,8 +122,13 @@ def recompute_person_embedding(
 
 def _rebuild_person_embedding(person_id: str) -> None:
     """
-    Collects audio from all meetings where this person was identified,
-    concatenates it, and computes a fresh voice embedding.
+    Recompute the mean voice embedding for a person from all accumulated samples.
+
+    Primary path: average the per-meeting .npy samples stored in PersonEmbedding
+    records — fast, works even when audio files have been deleted.
+
+    Fallback: if no stored samples exist (persons created before multi-embedding
+    support), extract audio from confirmed meetings and compute fresh samples.
     """
     import shutil
     import subprocess
@@ -131,6 +136,7 @@ def _rebuild_person_embedding(person_id: str) -> None:
     from pathlib import Path
 
     from app.db.database import SessionLocal
+    from app.models.person import PersonEmbedding
     from app.models.meeting import Meeting
     from app.models.speaker import SpeakerCluster
     from app.models.transcript import TranscriptSegment
@@ -139,6 +145,30 @@ def _rebuild_person_embedding(person_id: str) -> None:
 
     db = SessionLocal()
     try:
+        svc = SpeakerEmbeddingService()
+
+        # ── Primary: average stored per-meeting samples ───────────────────────
+        records = (
+            db.query(PersonEmbedding)
+            .filter_by(person_id=person_id)
+            .all()
+        )
+        stored_embeddings = []
+        for rec in records:
+            if rec.embedding_path:
+                p = Path(rec.embedding_path)
+                try:
+                    if p.exists():
+                        stored_embeddings.append(svc.load_embedding(p))
+                except Exception:
+                    pass
+
+        if stored_embeddings:
+            mean_emb = svc.average_embeddings(stored_embeddings)
+            svc.save_embedding(mean_emb, voice_embedding_path(person_id))
+            return
+
+        # ── Fallback: build samples from audio (pre-multi-embedding persons) ──
         clusters = (
             db.query(SpeakerCluster)
             .filter(SpeakerCluster.assigned_person_id == person_id)
@@ -156,10 +186,13 @@ def _rebuild_person_embedding(person_id: str) -> None:
 
         for cluster in clusters:
             meeting = db.get(Meeting, cluster.meeting_id)
-            if not meeting or not meeting.normalized_audio_path:
+            if not meeting:
                 continue
-            norm_path = Path(meeting.normalized_audio_path)
-            if not norm_path.exists():
+            from app.services.storage.file_layout import resolve_audio_for_embedding
+            norm_path = resolve_audio_for_embedding(
+                cluster.meeting_id, meeting.normalized_audio_path
+            )
+            if norm_path is None:
                 continue
 
             segments = (
@@ -189,20 +222,54 @@ def _rebuild_person_embedding(person_id: str) -> None:
             shutil.rmtree(tmp, ignore_errors=True)
             return
 
-        # Concatenate all collected segments
-        list_file = tmp / "list.txt"
-        list_file.write_text("\n".join(f"file '{p.name}'" for p in seg_files))
-        combined = tmp / "combined.wav"
-        r = subprocess.run(
-            [ffmpeg, "-y", "-f", "concat", "-safe", "0",
-             "-i", str(list_file), "-ar", "16000", "-ac", "1", str(combined)],
-            capture_output=True, cwd=str(tmp),
-        )
-        audio_to_embed = combined if (r.returncode == 0 and combined.exists()) else seg_files[0]
+        # One embedding per cluster (not per segment) to avoid over-weighting
+        # meetings with many short segments.
+        from app.services.storage.file_layout import voice_sample_path
+        cluster_embeddings = []
+        for cluster in clusters:
+            cluster_segs = [f for f in seg_files if f.name.startswith(cluster.id)]
+            if not cluster_segs:
+                continue
+            # Concatenate this cluster's segments into one clip.
+            if len(cluster_segs) == 1:
+                clip = cluster_segs[0]
+            else:
+                list_file = tmp / f"list_{cluster.id}.txt"
+                list_file.write_text("\n".join(f"file '{p.name}'" for p in cluster_segs))
+                clip = tmp / f"combined_{cluster.id}.wav"
+                r = subprocess.run(
+                    [ffmpeg, "-y", "-f", "concat", "-safe", "0",
+                     "-i", str(list_file), "-ar", "16000", "-ac", "1", str(clip)],
+                    capture_output=True, cwd=str(tmp),
+                )
+                if r.returncode != 0 or not clip.exists():
+                    clip = cluster_segs[0]
+            try:
+                emb = svc.compute_embedding(clip)
+                # Store as a proper PersonEmbedding sample for future rebuilds.
+                sample = voice_sample_path(person_id, cluster.meeting_id)
+                svc.save_embedding(emb, sample)
+                existing = (
+                    db.query(PersonEmbedding)
+                    .filter_by(person_id=person_id, source_meeting_id=cluster.meeting_id)
+                    .first()
+                )
+                if existing:
+                    existing.embedding_path = str(sample)
+                else:
+                    db.add(PersonEmbedding(
+                        person_id=person_id,
+                        embedding_path=str(sample),
+                        source_meeting_id=cluster.meeting_id,
+                    ))
+                cluster_embeddings.append(emb)
+            except Exception:
+                pass
 
-        svc = SpeakerEmbeddingService()
-        embedding = svc.compute_embedding(audio_to_embed)
-        svc.save_embedding(embedding, voice_embedding_path(person_id))
+        if cluster_embeddings:
+            db.commit()
+            mean_emb = svc.average_embeddings(cluster_embeddings)
+            svc.save_embedding(mean_emb, voice_embedding_path(person_id))
 
         shutil.rmtree(tmp, ignore_errors=True)
     except Exception as exc:
