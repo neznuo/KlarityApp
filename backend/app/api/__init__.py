@@ -8,6 +8,7 @@ from app.api.transcript import router as transcript_router
 from app.api.people import router as people_router
 from app.api.summaries import router as summaries_router
 from app.api.tasks import router as tasks_router
+from app.api.chat import router as chat_router
 
 def register_routers(app: FastAPI) -> None:
     app.include_router(health_router)
@@ -16,3 +17,4 @@ def register_routers(app: FastAPI) -> None:
     app.include_router(people_router)
     app.include_router(summaries_router)
     app.include_router(tasks_router)
+    app.include_router(chat_router)

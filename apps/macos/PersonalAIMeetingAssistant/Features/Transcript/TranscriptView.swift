@@ -16,6 +16,23 @@ struct TranscriptView: View {
     @State private var newPersonInputFor: SpeakerCluster? = nil
     @State private var newPersonName: String = ""
 
+    @State private var searchText: String = ""
+    @State private var isSearchVisible: Bool = false
+    @State private var currentMatchIndex: Int = 0
+    @FocusState private var searchFieldFocused: Bool
+
+    private var matchingSegmentIds: [String] {
+        guard !searchText.trimmingCharacters(in: .whitespaces).isEmpty else { return [] }
+        return segments
+            .filter { $0.text.localizedCaseInsensitiveContains(searchText) }
+            .map { $0.id }
+    }
+
+    private func stepMatch(by delta: Int) {
+        guard !matchingSegmentIds.isEmpty else { return }
+        currentMatchIndex = (currentMatchIndex + delta + matchingSegmentIds.count) % matchingSegmentIds.count
+    }
+
     /// First segment timestamp per cluster, for seeking.
     private var firstSegmentMsByCluster: [String: Int] {
         var map: [String: Int] = [:]
@@ -68,50 +85,103 @@ struct TranscriptView: View {
                             onAssign: onAssign,
                             onCreateAndAssign: onCreateAndAssign,
                             onConfirmSuggestion: onConfirmSuggestion,
-                            onDismissSuggestion: onDismissSuggestion
+                            onDismissSuggestion: onDismissSuggestion,
+                            isSearchVisible: $isSearchVisible,
+                            onToggleSearch: {
+                                isSearchVisible.toggle()
+                                if isSearchVisible { searchFieldFocused = true }
+                                else { searchText = ""; currentMatchIndex = 0 }
+                            }
                         )
                         Divider().opacity(0.4)
                     }
 
+                    // ── Search Bar ─────────────────────────────────────────
+                    if isSearchVisible {
+                        TranscriptSearchBar(
+                            searchText: $searchText,
+                            currentIndex: currentMatchIndex,
+                            totalMatches: matchingSegmentIds.count,
+                            isFocused: $searchFieldFocused,
+                            onPrev: { stepMatch(by: -1) },
+                            onNext: { stepMatch(by: 1) },
+                            onClose: {
+                                isSearchVisible = false
+                                searchText = ""
+                                currentMatchIndex = 0
+                            }
+                        )
+                        .onChange(of: searchText) { _, _ in currentMatchIndex = 0 }
+                        Divider().opacity(0.4)
+                    }
+
                     // ── Transcript Segments ─────────────────────────────────
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 24) {
-                            ForEach(segments) { seg in
-                                TranscriptRowView(
-                                    segment: seg,
-                                    cluster: speakers.first(where: { $0.id == seg.clusterId }),
-                                    people: people,
-                                    onSeek: { onSeek(seg.startMs) },
-                                    onAssign: { person in
-                                        if let c = speakers.first(where: { $0.id == seg.clusterId }) {
-                                            onAssign(c, person)
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 24) {
+                                ForEach(segments) { seg in
+                                    let isCurrentMatch = matchingSegmentIds.indices.contains(currentMatchIndex)
+                                        && matchingSegmentIds[currentMatchIndex] == seg.id
+                                    TranscriptRowView(
+                                        segment: seg,
+                                        cluster: speakers.first(where: { $0.id == seg.clusterId }),
+                                        people: people,
+                                        searchQuery: searchText,
+                                        isCurrentMatch: isCurrentMatch,
+                                        onSeek: { onSeek(seg.startMs) },
+                                        onAssign: { person in
+                                            if let c = speakers.first(where: { $0.id == seg.clusterId }) {
+                                                onAssign(c, person)
+                                            }
+                                        },
+                                        onCreateNew: {
+                                            if let c = speakers.first(where: { $0.id == seg.clusterId }) {
+                                                newPersonInputFor = c
+                                            }
+                                        },
+                                        onConfirmSuggestion: {
+                                            if let c = speakers.first(where: { $0.id == seg.clusterId }) {
+                                                onConfirmSuggestion(c)
+                                            }
+                                        },
+                                        onDismissSuggestion: {
+                                            if let c = speakers.first(where: { $0.id == seg.clusterId }) {
+                                                onDismissSuggestion(c)
+                                            }
                                         }
-                                    },
-                                    onCreateNew: {
-                                        if let c = speakers.first(where: { $0.id == seg.clusterId }) {
-                                            newPersonInputFor = c
-                                        }
-                                    },
-                                    onConfirmSuggestion: {
-                                        if let c = speakers.first(where: { $0.id == seg.clusterId }) {
-                                            onConfirmSuggestion(c)
-                                        }
-                                    },
-                                    onDismissSuggestion: {
-                                        if let c = speakers.first(where: { $0.id == seg.clusterId }) {
-                                            onDismissSuggestion(c)
-                                        }
-                                    }
-                                )
+                                    )
+                                    .id(seg.id)
+                                }
+                            }
+                            .padding(32)
+                            .frame(maxWidth: 800, alignment: .leading)
+                        }
+                        .onChange(of: currentMatchIndex) { _, _ in
+                            if let targetId = matchingSegmentIds[safe: currentMatchIndex] {
+                                withAnimation { proxy.scrollTo(targetId, anchor: .center) }
                             }
                         }
-                        .padding(32)
-                        .frame(maxWidth: 800, alignment: .leading) // Constrain width for readability
+                        .onChange(of: matchingSegmentIds) { _, ids in
+                            if let first = ids.first {
+                                withAnimation { proxy.scrollTo(first, anchor: .center) }
+                            }
+                        }
                     }
+                }
+                .onKeyPress(.escape) {
+                    guard isSearchVisible else { return .ignored }
+                    isSearchVisible = false; searchText = ""; currentMatchIndex = 0
+                    return .handled
                 }
             }
         }
         .background(AppTheme.Colors.background)
+        .onKeyPress(.init("f"), phases: .down) { press in
+            guard press.modifiers.contains(.command) else { return .ignored }
+            isSearchVisible = true
+            searchFieldFocused = true
+            return .handled
+        }
         .sheet(item: $newPersonInputFor) { cluster in
             VStack(spacing: 16) {
                 Text("Create New Person")
@@ -157,6 +227,8 @@ private struct SpeakerStrip: View {
     var onCreateAndAssign: (SpeakerCluster, String) -> Void
     var onConfirmSuggestion: (SpeakerCluster) -> Void
     var onDismissSuggestion: (SpeakerCluster) -> Void
+    @Binding var isSearchVisible: Bool
+    var onToggleSearch: () -> Void
 
     @State private var hoveredClusterId: String?
 
@@ -185,14 +257,26 @@ private struct SpeakerStrip: View {
     }
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(deduplicatedSpeakers) { cluster in
-                    speakerChip(for: cluster)
+        HStack(spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(deduplicatedSpeakers) { cluster in
+                        speakerChip(for: cluster)
+                    }
                 }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 10)
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 10)
+
+            Button(action: onToggleSearch) {
+                Image(systemName: isSearchVisible ? "magnifyingglass.circle.fill" : "magnifyingglass")
+                    .font(.system(size: 14))
+                    .foregroundStyle(isSearchVisible ? AppTheme.Colors.brandPrimary : AppTheme.Colors.secondaryText)
+                    .frame(width: 32, height: 32)
+            }
+            .buttonStyle(.plain)
+            .padding(.trailing, 8)
+            .help("Search transcript (⌘F)")
         }
     }
 
@@ -325,12 +409,74 @@ private struct SpeakerStrip: View {
     }
 }
 
+// MARK: - Search Bar
+
+private struct TranscriptSearchBar: View {
+    @Binding var searchText: String
+    let currentIndex: Int
+    let totalMatches: Int
+    @FocusState.Binding var isFocused: Bool
+    var onPrev: () -> Void
+    var onNext: () -> Void
+    var onClose: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(AppTheme.Colors.secondaryText)
+                .font(.system(size: 13))
+
+            TextField("Search transcript…", text: $searchText)
+                .textFieldStyle(.plain)
+                .font(AppTheme.Fonts.body)
+                .focused($isFocused)
+                .onSubmit { onNext() }
+
+            if !searchText.isEmpty {
+                Text(totalMatches == 0 ? "No results" : "\(currentIndex + 1) / \(totalMatches)")
+                    .font(AppTheme.Fonts.caption)
+                    .foregroundStyle(totalMatches == 0 ? .red : AppTheme.Colors.secondaryText)
+                    .frame(minWidth: 60, alignment: .trailing)
+
+                HStack(spacing: 2) {
+                    Button(action: onPrev) {
+                        Image(systemName: "chevron.up")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(totalMatches == 0)
+
+                    Button(action: onNext) {
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(totalMatches == 0)
+                }
+                .foregroundStyle(AppTheme.Colors.secondaryText)
+            }
+
+            Button(action: onClose) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(AppTheme.Colors.tertiaryText)
+                    .font(.system(size: 13))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(AppTheme.Colors.cardBackground)
+    }
+}
+
 // MARK: - Row Components
 
 struct TranscriptRowView: View {
     let segment: TranscriptSegment
     let cluster: SpeakerCluster?
     let people: [Person]
+    var searchQuery: String = ""
+    var isCurrentMatch: Bool = false
     var onSeek: () -> Void
     var onAssign: (Person) -> Void
     var onCreateNew: () -> Void
@@ -434,9 +580,7 @@ struct TranscriptRowView: View {
                     }
                 }
 
-                Text(segment.text)
-                    .font(AppTheme.Fonts.body)
-                    .foregroundStyle(AppTheme.Colors.primaryText)
+                highlightedSegmentText
                     .lineSpacing(5)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
@@ -446,12 +590,43 @@ struct TranscriptRowView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .background(
-            isHovered
-                ? AppTheme.Colors.cardBackground
-                : Color.clear
+            isCurrentMatch
+                ? AppTheme.Colors.brandLight.opacity(0.5)
+                : (isHovered ? AppTheme.Colors.cardBackground : Color.clear)
         )
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.Metrics.cornerRadius))
         .onHover { isHovered = $0 }
+    }
+
+    private var highlightedSegmentText: Text {
+        let query = searchQuery.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else {
+            return Text(segment.text)
+                .font(AppTheme.Fonts.body)
+                .foregroundColor(AppTheme.Colors.primaryText)
+        }
+        var result = Text("")
+        var remaining = segment.text
+        while let range = remaining.range(of: query, options: .caseInsensitive) {
+            let before = String(remaining[remaining.startIndex..<range.lowerBound])
+            let match  = String(remaining[range])
+            remaining  = String(remaining[range.upperBound...])
+            if !before.isEmpty {
+                result = result + Text(before)
+                    .font(AppTheme.Fonts.body)
+                    .foregroundColor(AppTheme.Colors.primaryText)
+            }
+            result = result + Text(match)
+                .font(AppTheme.Fonts.body)
+                .bold()
+                .foregroundColor(Color.orange)
+        }
+        if !remaining.isEmpty {
+            result = result + Text(remaining)
+                .font(AppTheme.Fonts.body)
+                .foregroundColor(AppTheme.Colors.primaryText)
+        }
+        return result
     }
 
     private func formatTimestamp(_ ms: Int) -> String {
@@ -486,5 +661,11 @@ struct TranscriptRowView: View {
         ]
         let index = abs(name.hashValue) % colors.count
         return colors[index]
+    }
+}
+
+private extension Array {
+    subscript(safe index: Int) -> Element? {
+        indices.contains(index) ? self[index] : nil
     }
 }

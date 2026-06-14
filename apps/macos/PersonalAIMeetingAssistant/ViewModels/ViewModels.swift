@@ -78,6 +78,17 @@ final class HomeViewModel: ObservableObject {
         }
     }
 
+    func deleteAudio(_ meeting: Meeting) async {
+        do {
+            try await APIClient.shared.deleteAudio(meetingId: meeting.id)
+            if let idx = meetings.firstIndex(where: { $0.id == meeting.id }) {
+                meetings[idx].audioFilePath = nil
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     func renameMeeting(_ meeting: Meeting, title: String) async {
         let trimmed = title.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return }
@@ -122,7 +133,12 @@ final class RecordingViewModel: ObservableObject {
         // Forward recorder's published changes so the view re-renders on timer ticks, state changes, etc.
         recorderCancellable = recorder.objectWillChange
             .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+                if self?.recorder.hasSysAudioSource == true {
+                    UserDefaults.standard.set(true, forKey: "klarity.systemAudioConfirmed")
+                }
+            }
     }
 
     var isRecording: Bool { recorder.state == .recording }
@@ -463,6 +479,16 @@ final class MeetingDetailViewModel: ObservableObject {
             }
         }
     }
+
+    func deleteAudio() async {
+        guard let id = meeting?.id else { return }
+        do {
+            try await APIClient.shared.deleteAudio(meetingId: id)
+            meeting?.audioFilePath = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
 }
 
 // MARK: - PeopleViewModel
@@ -714,6 +740,7 @@ enum PermissionState {
 // MARK: - PermissionsViewModel
 
 import AVFoundation
+import CoreAudio
 import CoreGraphics
 import AppKit
 
@@ -723,9 +750,9 @@ final class PermissionsViewModel: ObservableObject {
     @Published var hasAccessibilityAccess = false
     @Published var hasCalendarAccess = false
     // System audio capture via Core Audio Tap does not have a pre-flight API.
-    // The permission prompt appears the first time AudioHardwareCreateProcessTap is called.
-    // We infer "granted" from whether the last recording actually received audio.
-    @Published var hasSystemAudioAccess: Bool? = nil   // nil = unknown (never recorded)
+    // We infer "granted" from whether any past recording received audio, persisted in UserDefaults.
+    @Published var hasSystemAudioAccess: Bool? =
+        UserDefaults.standard.bool(forKey: "klarity.systemAudioConfirmed") ? true : nil
 
     var totalPermissions: Int { 4 }
 
@@ -751,6 +778,9 @@ final class PermissionsViewModel: ObservableObject {
         checkPermissions()
         checkAccessibility()
         checkCalendarAccess()
+        if UserDefaults.standard.bool(forKey: "klarity.systemAudioConfirmed") {
+            hasSystemAudioAccess = true
+        }
     }
 
     func checkPermissions() {
@@ -761,6 +791,27 @@ final class PermissionsViewModel: ObservableObject {
         AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
             DispatchQueue.main.async {
                 self?.hasMicAccess = granted
+            }
+        }
+    }
+
+    func requestSystemAudioPermission() {
+        guard #available(macOS 14.2, *) else { return }
+        // There's no preflight API for system audio (CoreAudio Process Tap).
+        // Creating and immediately destroying a throwaway tap triggers the TCC
+        // Screen Recording permission dialog — same effect as first-recording prompt,
+        // but controllable from Settings.
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let tapDesc = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
+            tapDesc.muteBehavior = .unmuted
+            var tapID = AudioObjectID(kAudioObjectUnknown)
+            let status = AudioHardwareCreateProcessTap(tapDesc, &tapID)
+            let granted = status == noErr
+            if tapID != AudioObjectID(kAudioObjectUnknown) {
+                AudioHardwareDestroyProcessTap(tapID)
+            }
+            DispatchQueue.main.async {
+                self?.updateSystemAudioStatus(receivedAudio: granted)
             }
         }
     }
@@ -784,6 +835,9 @@ final class PermissionsViewModel: ObservableObject {
     /// Call this after a recording attempt. `receivedAudio` is true if the tap
     /// delivered non-silence — which confirms system audio permission was granted.
     func updateSystemAudioStatus(receivedAudio: Bool) {
+        if receivedAudio {
+            UserDefaults.standard.set(true, forKey: "klarity.systemAudioConfirmed")
+        }
         hasSystemAudioAccess = receivedAudio
     }
 

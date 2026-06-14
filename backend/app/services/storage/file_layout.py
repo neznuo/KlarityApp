@@ -34,6 +34,20 @@ def normalized_audio_path(meeting_id: str) -> Path:
     return get_meeting_dir(meeting_id) / "normalized.wav"
 
 
+def resolve_audio_for_embedding(meeting_id: str, normalized_path_str: Optional[str]) -> Optional[Path]:
+    """Return the best available audio file for speaker embedding.
+
+    Prefers normalized.wav (already 16kHz mono), falls back to audio.wav when
+    normalized has been cleaned up after processing completes.
+    """
+    if normalized_path_str:
+        p = Path(normalized_path_str)
+        if p.exists():
+            return p
+    fallback = audio_path(meeting_id)
+    return fallback if fallback.exists() else None
+
+
 def transcript_raw_json_path(meeting_id: str) -> Path:
     return get_meeting_dir(meeting_id) / "transcript.raw.json"
 
@@ -59,6 +73,14 @@ def tasks_json_path(meeting_id: str) -> Path:
 
 
 def voice_embedding_path(person_id: str) -> Path:
+    """Mean embedding for a person — used for matching. Updated on every confirmation."""
     path = settings.voices_path / f"{person_id}.npy"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def voice_sample_path(person_id: str, meeting_id: str) -> Path:
+    """Per-meeting voice sample for a person — accumulated for averaging."""
+    path = settings.voices_path / f"{person_id}_{meeting_id}.npy"
     path.parent.mkdir(parents=True, exist_ok=True)
     return path

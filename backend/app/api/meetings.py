@@ -154,6 +154,27 @@ def delete_meeting(meeting_id: str, db: Session = Depends(get_db)):
                 pass
 
 
+@router.delete("/{meeting_id}/audio", status_code=204)
+def delete_meeting_audio(meeting_id: str, db: Session = Depends(get_db)):
+    """Delete the audio file for a meeting while keeping transcript and summary."""
+    meeting = db.get(Meeting, meeting_id)
+    if not meeting:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+
+    for path_str in [meeting.audio_file_path, meeting.normalized_audio_path]:
+        if path_str:
+            try:
+                p = Path(path_str)
+                if p.exists():
+                    p.unlink()
+            except Exception:
+                pass
+
+    meeting.audio_file_path = None
+    meeting.normalized_audio_path = None
+    db.commit()
+
+
 @router.post("/{meeting_id}/process")
 def trigger_processing(
     meeting_id: str,

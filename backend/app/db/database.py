@@ -64,3 +64,39 @@ def init_db() -> None:
             conn.commit()
         except OperationalError:
             pass  # Column already exists
+
+        # FTS5: full-text search virtual tables for the AI chat agent
+        conn.execute(text("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS meetings_fts USING fts5(
+                meeting_id UNINDEXED,
+                title,
+                summary_text,
+                content='',
+                tokenize='porter ascii'
+            )
+        """))
+        conn.execute(text("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS tasks_fts USING fts5(
+                task_id UNINDEXED,
+                meeting_id UNINDEXED,
+                description,
+                raw_owner_text,
+                content='',
+                tokenize='porter ascii'
+            )
+        """))
+        conn.commit()
+
+        # Seed FTS tables with existing data (safe: INSERT OR IGNORE won't re-insert)
+        conn.execute(text("""
+            INSERT OR IGNORE INTO meetings_fts(meeting_id, title, summary_text)
+            SELECT m.id, m.title, COALESCE(s.summary_markdown, '')
+            FROM meetings m
+            LEFT JOIN summaries s ON s.meeting_id = m.id
+        """))
+        conn.execute(text("""
+            INSERT OR IGNORE INTO tasks_fts(task_id, meeting_id, description, raw_owner_text)
+            SELECT id, meeting_id, description, COALESCE(raw_owner_text, '')
+            FROM tasks
+        """))
+        conn.commit()

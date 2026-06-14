@@ -34,8 +34,10 @@ struct PermissionsDashboardView: View {
             PermissionStatusRow(
                 icon: "speaker.wave.2.fill",
                 title: "System Audio",
-                subtitle: compact ? "Prompted on first recording" : "Permission is prompted when you start your first recording",
+                subtitle: compact ? "Required to capture meeting audio" : nil,
                 status: systemAudioState,
+                actionLabel: systemAudioState == .unknown ? "Grant Access" : nil,
+                action: systemAudioState == .unknown ? { permVM.requestSystemAudioPermission() } : nil,
                 compact: compact
             )
 

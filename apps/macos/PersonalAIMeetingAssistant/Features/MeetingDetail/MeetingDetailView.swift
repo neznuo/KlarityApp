@@ -9,6 +9,7 @@ struct MeetingDetailView: View {
     @StateObject private var vm = MeetingDetailViewModel()
     @State private var selectedTab: Tab = .transcript
     @State private var playerSeekTarget: Double? = nil
+    @State private var showDeleteAudioConfirm = false
 
     // Inline title editing
     @State private var isEditingTitle = false
@@ -143,13 +144,46 @@ struct MeetingDetailView: View {
             Divider().foregroundStyle(AppTheme.Colors.border)
 
             // ── Persistent Audio Player ───────────────────────────────────
-            AudioPlayerView(
-                audioFilePath: vm.meeting?.audioFilePath,
-                seekTarget: $playerSeekTarget
-            )
-            .padding(.horizontal)
-            .padding(.vertical, 8)
-            .background(AppTheme.Colors.cardBackground)
+            if vm.meeting?.audioFilePath != nil {
+                HStack(spacing: 0) {
+                    AudioPlayerView(
+                        audioFilePath: vm.meeting?.audioFilePath,
+                        seekTarget: $playerSeekTarget
+                    )
+                    .padding(.leading)
+                    .padding(.vertical, 8)
+
+                    Button {
+                        showDeleteAudioConfirm = true
+                    } label: {
+                        Image(systemName: "waveform.slash")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.trailing, 12)
+                    .help("Delete audio file")
+                }
+                .background(AppTheme.Colors.cardBackground)
+                .confirmationDialog("Delete audio file?", isPresented: $showDeleteAudioConfirm, titleVisibility: .visible) {
+                    Button("Delete Audio", role: .destructive) {
+                        Task { await vm.deleteAudio() }
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("The transcript and summary will remain. This cannot be undone.")
+                }
+            } else if vm.meeting?.status == .complete {
+                HStack {
+                    Image(systemName: "waveform.slash")
+                        .foregroundStyle(.tertiary)
+                    Text("Audio deleted")
+                        .font(AppTheme.Fonts.caption)
+                        .foregroundStyle(.tertiary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .background(AppTheme.Colors.cardBackground)
+            }
         }
         .navigationTitle("")
         #if os(iOS)

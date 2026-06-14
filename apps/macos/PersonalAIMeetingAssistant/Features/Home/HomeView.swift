@@ -205,6 +205,13 @@ struct HomeView: View {
                                 Label("Retry Transcription", systemImage: "arrow.clockwise")
                             }
                         }
+                        if meeting.audioFilePath != nil && meeting.status == .complete {
+                            Button(role: .destructive) {
+                                Task { await vm.deleteAudio(meeting) }
+                            } label: {
+                                Label("Delete Audio", systemImage: "waveform.slash")
+                            }
+                        }
                         Divider()
                         Button(role: .destructive) {
                             Task { await vm.deleteMeeting(meeting) }

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.models.meeting import Meeting
-from app.models.person import Person
+from app.models.person import Person, PersonEmbedding
 from app.models.speaker import SpeakerCluster
 from app.models.transcript import TranscriptSegment
 from app.schemas import (
@@ -21,6 +21,96 @@ from app.schemas import (
 )
 
 router = APIRouter(prefix="/meetings", tags=["transcript"])
+
+# Maximum number of per-meeting voice samples to keep per person.
+# Older samples beyond this cap are pruned so storage stays bounded.
+_MAX_EMBEDDINGS_PER_PERSON = 20
+
+
+def _update_person_voice_model(
+    person: Person,
+    cluster_embedding_path: Path,
+    meeting_id: str,
+    db: Session,
+) -> None:
+    """
+    Accumulate a new voice sample for a person and recompute their mean embedding.
+
+    Each confirmed speaker assignment contributes one embedding from that meeting.
+    The mean of all accumulated samples is saved as voices/{person_id}.npy and used
+    for matching in future meetings. This improves accuracy over time — random noise
+    in any single recording averages out, and the centroid converges to the true voice.
+    """
+    import shutil
+    import numpy as np
+    from app.services.embeddings.speaker_embedding import SpeakerEmbeddingService
+    from app.services.storage.file_layout import voice_embedding_path, voice_sample_path
+
+    if not cluster_embedding_path.exists():
+        return
+
+    svc = SpeakerEmbeddingService()
+
+    # Save this meeting's sample (overwrite if re-assigning the same meeting).
+    sample_path = voice_sample_path(person.id, meeting_id)
+    shutil.copy2(str(cluster_embedding_path), str(sample_path))
+
+    # Register in DB if not already present for this meeting.
+    existing = (
+        db.query(PersonEmbedding)
+        .filter_by(person_id=person.id, source_meeting_id=meeting_id)
+        .first()
+    )
+    if existing:
+        existing.embedding_path = str(sample_path)
+    else:
+        db.add(PersonEmbedding(
+            person_id=person.id,
+            embedding_path=str(sample_path),
+            source_meeting_id=meeting_id,
+        ))
+    db.flush()
+
+    # Prune oldest samples beyond the cap.
+    all_records = (
+        db.query(PersonEmbedding)
+        .filter_by(person_id=person.id)
+        .order_by(PersonEmbedding.created_at.asc())
+        .all()
+    )
+    if len(all_records) > _MAX_EMBEDDINGS_PER_PERSON:
+        for old in all_records[: len(all_records) - _MAX_EMBEDDINGS_PER_PERSON]:
+            if old.embedding_path:
+                try:
+                    Path(old.embedding_path).unlink(missing_ok=True)
+                except Exception:
+                    pass
+            db.delete(old)
+        db.flush()
+
+    # Reload surviving records and compute mean embedding.
+    surviving = (
+        db.query(PersonEmbedding)
+        .filter_by(person_id=person.id)
+        .all()
+    )
+    embeddings = []
+    for rec in surviving:
+        if rec.embedding_path:
+            p = Path(rec.embedding_path)
+            try:
+                if p.exists():
+                    embeddings.append(svc.load_embedding(p))
+            except Exception:
+                pass
+
+    if not embeddings:
+        # Fallback: just copy the single sample directly.
+        shutil.copy2(str(cluster_embedding_path), str(voice_embedding_path(person.id)))
+        return
+
+    mean_emb = svc.average_embeddings(embeddings)
+    svc.save_embedding(mean_emb, voice_embedding_path(person.id))
 
 
 @router.get("/{meeting_id}/transcript", response_model=list[TranscriptSegmentOut])
@@ -154,44 +244,41 @@ def assign_speaker(
     else:
         raise HTTPException(status_code=400, detail="Provide person_id or new_person_name")
 
-    # ── Save the cluster's voice embedding as this person's voice model ──────
-    # This is what makes speaker recognition work in future meetings.
+    # ── Update person voice model (accumulate + recompute mean) ──────────────
     from app.services.storage.file_layout import voice_embedding_path
-    import shutil
     cluster_emb = voice_embedding_path(f"cluster_{cluster.id}")
-    person_emb = voice_embedding_path(person.id)
 
-    if cluster_emb.exists():
-        try:
-            shutil.copy2(str(cluster_emb), str(person_emb))
-        except Exception:
-            pass  # Non-fatal — recognition just won't work for this person yet
-    else:
-        # Cluster embedding doesn't exist (e.g., embedding step failed during
-        # processing). Compute it now from the cluster's audio segments.
+    if not cluster_emb.exists():
+        # Cluster embedding doesn't exist — compute it now from audio segments.
         from app.workers.processing_worker import _extract_cluster_audio
         from app.services.embeddings.speaker_embedding import SpeakerEmbeddingService
+        from app.services.storage.file_layout import resolve_audio_for_embedding
         meeting_obj = db.get(Meeting, meeting_id)
-        if meeting_obj and meeting_obj.normalized_audio_path:
-            norm_path = Path(meeting_obj.normalized_audio_path)
-            if norm_path.exists():
-                segments = (
-                    db.query(TranscriptSegment)
-                    .filter(
-                        TranscriptSegment.cluster_id == cluster.id,
-                        TranscriptSegment.meeting_id == meeting_id,
-                    )
-                    .all()
+        ref_audio = (
+            resolve_audio_for_embedding(meeting_id, meeting_obj.normalized_audio_path)
+            if meeting_obj else None
+        )
+        if ref_audio is not None:
+            segments = (
+                db.query(TranscriptSegment)
+                .filter(
+                    TranscriptSegment.cluster_id == cluster.id,
+                    TranscriptSegment.meeting_id == meeting_id,
                 )
-                audio_path = _extract_cluster_audio(norm_path, segments, cluster.id)
-                if audio_path is not None:
-                    try:
-                        svc = SpeakerEmbeddingService()
-                        embedding = svc.compute_embedding(audio_path)
-                        svc.save_embedding(embedding, cluster_emb)
-                        shutil.copy2(str(cluster_emb), str(person_emb))
-                    except Exception:
-                        pass
+                .all()
+            )
+            clip = _extract_cluster_audio(ref_audio, segments, cluster.id)
+            if clip is not None:
+                try:
+                    svc = SpeakerEmbeddingService()
+                    svc.save_embedding(svc.compute_embedding(clip), cluster_emb)
+                except Exception:
+                    pass
+
+    try:
+        _update_person_voice_model(person, cluster_emb, meeting_id, db)
+    except Exception:
+        pass  # Non-fatal
 
     # ── Update person stats ───────────────────────────────────────────────────
     from sqlalchemy import func as sqlfunc
@@ -296,16 +383,13 @@ def confirm_suggestion(
     cluster.assigned_person_id = cluster.suggested_person_id
     cluster.suggested_person_id = None
 
-    # Copy cluster voice embedding as this person's voice model
+    # Update person voice model (accumulate + recompute mean)
     from app.services.storage.file_layout import voice_embedding_path
-    import shutil
     cluster_emb = voice_embedding_path(f"cluster_{cluster.id}")
-    if cluster_emb.exists():
-        person_emb = voice_embedding_path(person.id)
-        try:
-            shutil.copy2(str(cluster_emb), str(person_emb))
-        except Exception:
-            pass
+    try:
+        _update_person_voice_model(person, cluster_emb, meeting_id, db)
+    except Exception:
+        pass
 
     # Update person stats
     from sqlalchemy import func as sqlfunc

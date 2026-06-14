@@ -108,6 +108,9 @@ struct ContentView: View {
             case .upcoming:
                 UpcomingView()
                     .navigationTitle("Upcoming")
+            case .assistant:
+                ChatView()
+                    .navigationTitle("AI Assistant")
             case .settings:
                 SettingsView()
                     .navigationTitle("Settings")
@@ -412,6 +415,7 @@ enum AppNavigationItem: String, CaseIterable, Identifiable {
     case meetings    = "Meetings"
     case upcoming    = "Upcoming"
     case actionItems = "Action Items"
+    case assistant   = "AI Assistant"
     case contacts    = "Contacts"
     case settings    = "Settings"
 
@@ -422,6 +426,7 @@ enum AppNavigationItem: String, CaseIterable, Identifiable {
         case .meetings:    return "video"
         case .upcoming:    return "clock"
         case .actionItems: return "list.bullet.clipboard"
+        case .assistant:   return "sparkles"
         case .contacts:    return "person.2"
         case .settings:    return "gear"
         }

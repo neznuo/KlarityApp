@@ -19,6 +19,7 @@
 		35F9A5DA1202415632618537 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE6B46DD9BCDF2336923D1C5 /* SettingsView.swift */; };
 		38382AC7C6ACD01CB3ADA808 /* KlarityApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB8A27630A160812A4FA6C8F /* KlarityApp.swift */; };
 		4049BBC2197F916E10B9AE49 /* TranscriptView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8162E8FB0DFA5800481EF64F /* TranscriptView.swift */; };
+		47B5B221268E638D6F609B61 /* ChatViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06D27DCF1B35FCD045CA5893 /* ChatViewModel.swift */; };
 		6E5550BB0F674149C92E45FF /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B048DC8530A0E0015006EE49 /* APIClient.swift */; };
 		7256AA73C3D692522B9AB684 /* RecordingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0916DF495276ED78316C1240 /* RecordingView.swift */; };
 		76F6337AE3809BE3C8829A3A /* ActionItemsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 867A3534560A515E2D5835DF /* ActionItemsView.swift */; };
@@ -30,6 +31,7 @@
 		87913C66E9EF51E44126F03F /* AudioPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5558C1B35A861E3856E28694 /* AudioPlayerView.swift */; };
 		8D9F4326B565E7EF7C0B53E7 /* MeetingDetectorService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2D05267AD4B6E5EDC2F2088 /* MeetingDetectorService.swift */; };
 		944619DD990D61F08F346383 /* ViewModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34DAC82F4A07DC5B5C9A3546 /* ViewModels.swift */; };
+		A5B913FAFA0B4F34147BE5DB /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 767EB9BFF945A168D19D208E /* ChatView.swift */; };
 		BCE72884D9DF2A4747F1ABEB /* PeopleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 693B45FE31FF2C74BE1E5367 /* PeopleView.swift */; };
 		BFC34AB0DD690B36C3495836 /* AppLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A4D60C28D55FBDBA7D55262 /* AppLogger.swift */; };
 		C123F47F9DE8A35A48E5E09B /* PermissionStatusRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BD14BADB216E3CADEE22A63 /* PermissionStatusRow.swift */; };
@@ -40,6 +42,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		06D27DCF1B35FCD045CA5893 /* ChatViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatViewModel.swift; sourceTree = "<group>"; };
 		0916DF495276ED78316C1240 /* RecordingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingView.swift; sourceTree = "<group>"; };
 		0A4D60C28D55FBDBA7D55262 /* AppLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLogger.swift; sourceTree = "<group>"; };
 		132986085C3C9AB477A192EF /* OnboardingStepContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingStepContainer.swift; sourceTree = "<group>"; };
@@ -55,6 +58,7 @@
 		693B45FE31FF2C74BE1E5367 /* PeopleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeopleView.swift; sourceTree = "<group>"; };
 		6A2F164AB61A2369920971F4 /* CalendarService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarService.swift; sourceTree = "<group>"; };
 		6BD14BADB216E3CADEE22A63 /* PermissionStatusRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionStatusRow.swift; sourceTree = "<group>"; };
+		767EB9BFF945A168D19D208E /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
 		7D4AD9E461EA80D8A4B7D579 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		7DBA6CC50E26967DDDAFA002 /* KeychainService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainService.swift; sourceTree = "<group>"; };
 		7F52AE1EB9DDB26DE99EE796 /* SelectableMeetingNotesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectableMeetingNotesView.swift; sourceTree = "<group>"; };
@@ -73,8 +77,8 @@
 		DCE9450AD3F25B91E869969B /* BackendProcessManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackendProcessManager.swift; sourceTree = "<group>"; };
 		E7FE62BA19833995B723C109 /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
 		EC6F761B09972FF794ADA1AB /* MarkdownContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownContentView.swift; sourceTree = "<group>"; };
-		"TEMP_08B02AB8-8274-4676-87AE-553DF92C455B" /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
-		"TEMP_E8561BD8-AD5C-4D46-87D9-E41BD704ADBA" /* Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Debug.xcconfig; sourceTree = "<group>"; };
+		"TEMP_87FFF58B-5E64-4820-9992-1EA40885FFCC" /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
+		"TEMP_EA840154-962D-43F9-AE31-39C935954F27" /* Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Debug.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -126,6 +130,15 @@
 			path = ActionItems;
 			sourceTree = "<group>";
 		};
+		48854D79AA0F8AF84AA362EF /* Chat */ = {
+			isa = PBXGroup;
+			children = (
+				767EB9BFF945A168D19D208E /* ChatView.swift */,
+				06D27DCF1B35FCD045CA5893 /* ChatViewModel.swift */,
+			);
+			path = Chat;
+			sourceTree = "<group>";
+		};
 		4B53D2D8CE73A23CC54E1DE6 /* Home */ = {
 			isa = PBXGroup;
 			children = (
@@ -167,6 +180,7 @@
 			isa = PBXGroup;
 			children = (
 				3428DD5145169A1219722DD0 /* ActionItems */,
+				48854D79AA0F8AF84AA362EF /* Chat */,
 				4B53D2D8CE73A23CC54E1DE6 /* Home */,
 				22C410C77F70FF58529017D5 /* MeetingDetail */,
 				8B653286F45319361ABA8975 /* MenuBar */,
@@ -253,11 +267,11 @@
 			path = Services;
 			sourceTree = "<group>";
 		};
-		"TEMP_CB2AD740-29D7-4E97-993C-03D5A136D246" /* macos */ = {
+		"TEMP_01D7E763-AB3F-4E43-BA09-9A27BFFFAE92" /* macos */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_E8561BD8-AD5C-4D46-87D9-E41BD704ADBA" /* Debug.xcconfig */,
-				"TEMP_08B02AB8-8274-4676-87AE-553DF92C455B" /* Release.xcconfig */,
+				"TEMP_EA840154-962D-43F9-AE31-39C935954F27" /* Debug.xcconfig */,
+				"TEMP_87FFF58B-5E64-4820-9992-1EA40885FFCC" /* Release.xcconfig */,
 			);
 			path = macos;
 			sourceTree = "<group>";
@@ -365,6 +379,8 @@
 				7886CD1867401D6C3F9375CC /* AudioRecorder.swift in Sources */,
 				0C285D719C56C1678D0E89F0 /* BackendProcessManager.swift in Sources */,
 				D6C5696B1F2936EE1D8F7C14 /* CalendarService.swift in Sources */,
+				A5B913FAFA0B4F34147BE5DB /* ChatView.swift in Sources */,
+				47B5B221268E638D6F609B61 /* ChatViewModel.swift in Sources */,
 				1A77890590D00F67DF14CB89 /* ContentView.swift in Sources */,
 				11899CFC8D58E4397765BC23 /* HomeView.swift in Sources */,
 				11A8CA6EEBBA39B069EC071D /* KeychainService.swift in Sources */,
@@ -394,7 +410,7 @@
 /* Begin XCBuildConfiguration section */
 		0FB074AFFE7714D6B09D0E3C /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_E8561BD8-AD5C-4D46-87D9-E41BD704ADBA" /* Debug.xcconfig */;
+			baseConfigurationReference = "TEMP_EA840154-962D-43F9-AE31-39C935954F27" /* Debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = PersonalAIMeetingAssistant/App/KlarityApp.entitlements;
@@ -470,7 +486,7 @@
 		};
 		9DA87629B09AF48CD356601E /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_08B02AB8-8274-4676-87AE-553DF92C455B" /* Release.xcconfig */;
+			baseConfigurationReference = "TEMP_87FFF58B-5E64-4820-9992-1EA40885FFCC" /* Release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = PersonalAIMeetingAssistant/App/KlarityApp.entitlements;
